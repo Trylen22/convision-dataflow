@@ -79,6 +79,15 @@
                    padding: 26px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
                    background: linear-gradient(transparent, rgba(0,0,0,.85)); opacity: 0; pointer-events: none; transition: opacity .25s; }
   body.imm.ui #bar { opacity: 1; pointer-events: auto; }
+  /* full screen with the phone held upright: turn the stage sideways so the 16:9 frame fills the display */
+  body.rot #stage { inset: auto; top: 0; left: 100%; width: 100vh; height: 100vw; width: 100dvh;
+                     transform-origin: top left; transform: rotate(90deg); }
+  body.rot #view canvas { width: min(100vh, 177.78vw); height: min(56.25vh, 100vw);
+                           width: min(100dvh, 177.78vw); height: min(56.25dvh, 100vw); }
+  body.rot #bar { padding: 26px 18px 12px; }
+  .i-exit { display: none; }
+  body.full #fs .i-enter { display: none; }
+  body.full #fs .i-exit { display: block; }
 </style>
 </head>
 <body class="playing ui">
@@ -95,7 +104,7 @@
       <button id="play" type="button" aria-label="Pause"><svg class="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg><svg class="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg></button>
       <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Timeline">
       <span id="clock">00:00 / 00:00</span>
-      <button id="fs" type="button" aria-label="Full screen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg></button>
+      <button id="fs" type="button" aria-label="Full screen"><svg class="i-enter" viewBox="0 0 24 24"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg><svg class="i-exit" viewBox="0 0 24 24"><path d="M7 4h2v5H4V7h3zm8 0h2v3h3v2h-5zM4 15h5v5H7v-3H4zm11 0h5v2h-3v3h-2z"/></svg></button>
     </div>
   </div>
   <section id="now" aria-live="polite"><div class="n" id="nowN"></div><div><h2 id="nowT"></h2><p id="nowS"></p></div></section>
@@ -994,7 +1003,7 @@ let scrubbing = false, wasPlaying = false, hideAt = 0;
 
 // Draw at the screen's real pixel count (at most 1920 wide) so phones don't paint 2 MP every frame.
 function fit() {
-  const w = cv.getBoundingClientRect().width || W;
+  const w = cv.offsetWidth || W;
   const res = clamp(Math.ceil(w * (devicePixelRatio || 1) / W * 10) / 10, .4, 1);
   if (res !== RES) { RES = res; cv.width = Math.round(W * res); cv.height = Math.round(H * res); }
   dirty = true;
@@ -1002,7 +1011,16 @@ function fit() {
 
 const sideways = matchMedia('(orientation: landscape) and (max-height: 600px)');
 const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
-function layout() { body.classList.toggle('imm', sideways.matches || !!fsEl()); requestAnimationFrame(fit); }
+// Our own full-screen mode works everywhere (iPhone Safari has no page full screen);
+// native full screen is layered on top where the browser allows it.
+let full = false, wentNative = false;
+function layout() {
+  if (full && wentNative && !fsEl()) { full = false; wentNative = false; }
+  body.classList.toggle('full', full);
+  body.classList.toggle('imm', full || sideways.matches || !!fsEl());
+  body.classList.toggle('rot', full && innerHeight > innerWidth);
+  requestAnimationFrame(fit);
+}
 sideways.addEventListener ? sideways.addEventListener('change', layout) : sideways.addListener(layout);
 addEventListener('resize', layout);
 ['fullscreenchange', 'webkitfullscreenchange'].forEach(ev => document.addEventListener(ev, layout));
@@ -1024,19 +1042,28 @@ seek.addEventListener('input', () => {
 });
 seek.addEventListener('change', () => { scrubbing = false; setPlaying(wasPlaying); });
 
-if (!(document.fullscreenEnabled || document.webkitFullscreenEnabled)) $('fs').hidden = true;
-$('fs').onclick = async () => {
-  if (fsEl()) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
-  try {
-    await (stage.requestFullscreen || stage.webkitRequestFullscreen).call(stage);
-    await screen.orientation.lock('landscape');
-  } catch (e) {}
-};
+function setFull(on) {
+  full = on; wentNative = false; layout(); poke();
+  if (on) {
+    const req = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+    if (req && (document.fullscreenEnabled || document.webkitFullscreenEnabled)) {
+      Promise.resolve(req.call(document.documentElement))
+        .then(() => { wentNative = true; return screen.orientation && screen.orientation.lock('landscape'); })
+        .catch(() => {}).then(layout);
+    }
+    scrollTo(0, 0);
+  } else if (fsEl()) {
+    try { screen.orientation && screen.orientation.unlock(); } catch (e) {}
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }
+}
+$('fs').onclick = () => setFull(!full);
 addEventListener('keydown', e => {
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
   else if (e.code === 'ArrowRight') { tv = Math.min(DURATION, tv + 5); dirty = true; }
   else if (e.code === 'ArrowLeft') { tv = Math.max(0, tv - 5); dirty = true; }
   else if (e.key === 'f') $('fs').click();
+  else if (e.key === 'Escape' && full) setFull(false);
 });
 
 // chapters come straight from the animation's own step titles
