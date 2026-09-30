@@ -1,0 +1,1083 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>ConVision · How one part gets sorted</title>
+<meta name="description" content="Animated walkthrough of the ConVision vision-guided conveyor sorter: a camera and Jetson Nano classify each part, the PLC drives the diverter, and every signal is shown.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://trylen22.github.io/convision-dataflow/">
+<meta property="og:title" content="ConVision · How one part gets sorted">
+<meta property="og:description" content="A vision-guided conveyor that sorts screws from bolts. Watch every signal from camera to PLC to diverter.">
+<meta property="og:image" content="https://trylen22.github.io/convision-dataflow/preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root { --fg: #e8edf2; --dim: #8b97a6; --line: rgba(255,255,255,.1); --acc: #3dd6f5; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #000; color: var(--fg); }
+  body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+  button { font: inherit; cursor: pointer; }
+  main { max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 0 calc(28px + env(safe-area-inset-bottom)); }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 16px 18px 12px; }
+  header b { font: 700 17px/1 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; letter-spacing: .3em; }
+  header span { color: var(--dim); font-size: 13px; }
+
+  #stage { position: relative; background: #000; }
+  #view { position: relative; }
+  #view canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #000; touch-action: manipulation; }
+  #big { position: absolute; inset: 0; margin: auto; width: 76px; height: 76px; border-radius: 50%; padding: 0;
+          border: 1px solid rgba(255,255,255,.28); background: rgba(0,0,0,.55); color: #fff; display: grid; place-items: center;
+          -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  #big svg { width: 34px; height: 34px; fill: currentColor; }
+  body:not(.playing) #big { opacity: 1; pointer-events: auto; }
+  #line { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255,255,255,.08); pointer-events: none; }
+  #line i { display: block; height: 100%; width: 0; background: var(--acc); }
+  #bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  #bar button { width: 44px; height: 44px; flex: none; padding: 0; border-radius: 10px; border: 1px solid var(--line);
+                 background: rgba(255,255,255,.06); color: var(--fg); display: grid; place-items: center; }
+  #bar svg { width: 22px; height: 22px; fill: currentColor; }
+  #seek { flex: 1; min-width: 0; height: 44px; margin: 0; accent-color: var(--acc); }
+  #clock { font: 500 13px ui-monospace, Menlo, Consolas, monospace; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .i-pause, .i-replay { display: none; }
+  body.playing .i-play { display: none; }
+  body.playing .i-pause { display: block; }
+  body.ended #big .i-play { display: none; }
+  body.ended #big .i-replay { display: block; }
+
+  #now { display: flex; gap: 14px; padding: 16px 18px 4px; min-height: 100px; }
+  #now .n { font: 700 15px ui-monospace, Menlo, monospace; color: var(--acc); padding-top: 4px; }
+  #now h2 { margin: 0 0 4px; font-size: 20px; line-height: 1.25; }
+  #now p { margin: 0; color: var(--dim); }
+  #hint { display: flex; gap: 8px; align-items: center; margin: 6px 18px 4px; font-size: 13px; color: var(--dim); }
+  #hint svg { width: 18px; height: 18px; fill: currentColor; flex: none; }
+  #chapters { list-style: none; margin: 12px 0 0; padding: 0 12px; }
+  #chapters button { position: relative; overflow: hidden; width: 100%; display: grid; grid-template-columns: 30px 1fr auto; gap: 10px;
+                      align-items: center; text-align: left; padding: 12px; margin: 0 0 6px; color: var(--fg);
+                      background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 10px; }
+  #chapters .n { font: 600 13px ui-monospace, Menlo, monospace; color: var(--dim); }
+  #chapters b { display: block; font-weight: 600; }
+  #chapters small { display: block; margin-top: 2px; font-size: 13px; color: var(--dim); }
+  #chapters .at { font: 12px ui-monospace, Menlo, monospace; color: var(--dim); }
+  #chapters i { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: var(--acc); }
+  #chapters li.on button { border-color: rgba(61,214,245,.45); background: rgba(61,214,245,.07); }
+  #chapters li.on .n { color: var(--acc); }
+  footer { margin: 20px 18px 0; font-size: 12px; color: #5d6773; }
+  @media (min-width: 900px) {
+    #hint { display: none; }
+    #chapters { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; }
+  }
+
+  /* sideways phone or full screen: the animation takes the whole screen, controls float and hide */
+  body.imm { height: 100%; overflow: hidden; }
+  body.imm header, body.imm #now, body.imm #hint, body.imm #chapters, body.imm footer { display: none; }
+  body.imm #stage { position: fixed; inset: 0; }
+  body.imm #view { position: absolute; inset: 0; display: grid; place-items: center; }
+  body.imm #view canvas { aspect-ratio: auto; width: min(100vw, 177.78vh); height: min(56.25vw, 100vh);
+                           width: min(100vw, 177.78dvh); height: min(56.25vw, 100dvh); }
+  body.imm #bar { position: absolute; left: 0; right: 0; bottom: 0; border: 0;
+                   padding: 26px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+                   background: linear-gradient(transparent, rgba(0,0,0,.85)); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  body.imm.ui #bar { opacity: 1; pointer-events: auto; }
+</style>
+</head>
+<body class="playing ui">
+<main>
+  <header><b>CONVISION</b><span>Vision-guided conveyor sorting · how one part gets sorted</span></header>
+  <div id="stage">
+    <div id="view">
+      <canvas id="v" width="1920" height="1080" role="img"
+        aria-label="Animated walkthrough: the PLC starts the conveyor, a photo-eye stops each part under the camera, the Jetson Nano classifies it, the class travels over Ethernet to the PLC, and the PLC drives the diverter into the matching bin."></canvas>
+      <button id="big" type="button" aria-label="Play"><svg class="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg><svg class="i-replay" viewBox="0 0 24 24"><path d="M12 5V1.5L7 6l5 4.5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg></button>
+      <div id="line"><i id="fill"></i></div>
+    </div>
+    <div id="bar">
+      <button id="play" type="button" aria-label="Pause"><svg class="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg><svg class="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg></button>
+      <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Timeline">
+      <span id="clock">00:00 / 00:00</span>
+      <button id="fs" type="button" aria-label="Full screen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5v2H6v3zm11-5h5v5h-2V6h-3zM4 15h2v3h3v2H4zm14 3v-3h2v5h-5v-2z"/></svg></button>
+    </div>
+  </div>
+  <section id="now" aria-live="polite"><div class="n" id="nowN"></div><div><h2 id="nowT"></h2><p id="nowS"></p></div></section>
+  <p id="hint"><svg viewBox="0 0 24 24"><path d="M9 2h6a2 2 0 0 1 2 2v7h-2V4H9v16h3v2H9a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm9 12a4 4 0 0 1 4 4h-2a2 2 0 0 0-2-2v2l-3-3 3-3z"/></svg>Turn your phone sideways to watch full screen. Tap the animation to pause.</p>
+  <ol id="chapters"></ol>
+  <footer>ICET 4751 capstone · concept animation · hardware, protocol and timings are illustrative</footer>
+</main>
+<script>
+(() => {
+'use strict';
+// =====================================================================
+//  ConVision · data-flow overview
+//  Everything is a pure function of time: render(t) draws one frame.
+//  World time drives the physics; video time adds slow motion where
+//  fast PLC signals need to be seen.
+// =====================================================================
+const W = 1920, H = 1080;
+let RES = 1;
+const cv = document.getElementById('v');
+const g = cv.getContext('2d');
+const FONT = '"Inter","Ubuntu Sans","Segoe UI",system-ui,sans-serif';
+const MONO = '"JetBrains Mono","Ubuntu Sans Mono","SFMono-Regular",Consolas,monospace';
+
+// ---------------------------------------------------------------- math
+const clamp = (x, a = 0, b = 1) => x < a ? a : x > b ? b : x;
+const lerp = (a, b, u) => a + (b - a) * u;
+const smooth = u => { u = clamp(u); return u * u * (3 - 2 * u); };
+const ease = u => { u = clamp(u); return u < .5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2; };
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const win = (t, a, b, fi = .45, fo = .45) => Math.min(seg(t, a, a + fi), 1 - seg(t, b - fo, b));
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const D2R = Math.PI / 180;
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// ---------------------------------------------------------------- palette
+const C = {
+  eth: '#8ea2ff', di: '#3ee07f', ao: '#c084fc', pwr: '#ff7a45', video: '#5fd8ff',
+  bolt: '#3dd6f5', screw: '#ffb020', text: '#e8edf2', dim: '#8592a3', faint: '#4b5563',
+  panel: 'rgba(10,14,20,.82)', line: 'rgba(255,255,255,.10)', red: '#ff4d5e',
+};
+const TYPE_COL = { eth: C.eth, di: C.di, ao: C.ao, pwr: C.pwr, video: C.video };
+const hex2rgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const rgba = (c, a) => { const [r, gg, b] = typeof c === 'string' ? hex2rgb(c) : c; return `rgba(${r | 0},${gg | 0},${b | 0},${a})`; };
+
+// ---------------------------------------------------------------- plant geometry
+const X_TAIL = -7.0, X_HEAD = 4.2, ZB = 1.2, BW = 0.75;   // belt ends, belt top, half width
+const XC = 1.4;                                            // camera station
+const HALF = 0.45;                                         // half part length
+const PITCH = 3.6;                                         // even spacing between parts
+const PIV = 5.5, FIN_L = 1.2;                              // diverter pivot at the Y split, fin length upstream
+const FIN_A = Math.asin(.56 / FIN_L);                      // fin swing: free end touches the closed branch wall
+const zc = x => lerp(1.12, 0.92, clamp((x - 4.3) / 1.7));  // chute surface height
+const BIN_Y = { bolt: -0.62, screw: 0.62 };
+
+// ---------------------------------------------------------------- script (world time)
+const EV = [], PK = [], RAMPS = [], FIN = [], WARPS = [], M = {};
+const setTag = (t, k, v) => EV.push({ t, k, v });
+const pkt = (link, t0, dur, label) => { PK.push({ link, t0, t1: t0 + dur, label }); return t0 + dur; };
+const V = 1.0, ACC = 0.8, DEC = 0.4, LAT_DI = 0.2, LAT_SCAN = 0.04, LAT_DO = 0.16;
+
+// belt distance S(t): integrate the ramp profile on a fine table
+const DT = 1 / 500, HORIZON = 140;
+let STAB = new Float64Array(1);
+function vAt(t) { let v = 0; for (const r of RAMPS) { if (t < r.t0) break; v = t < r.t1 ? lerp(r.v0, r.v1, smooth((t - r.t0) / (r.t1 - r.t0))) : r.v1; } return v; }
+function buildS() { RAMPS.sort((a, b) => a.t0 - b.t0); const n = Math.ceil(HORIZON / DT) + 2; STAB = new Float64Array(n);
+  for (let i = 1; i < n; i++) STAB[i] = STAB[i - 1] + vAt((i - .5) * DT) * DT; }
+function S(t) { const f = clamp(t, 0, HORIZON) / DT, i = Math.floor(f), u = f - i; return lerp(STAB[i], STAB[Math.min(i + 1, STAB.length - 1)], u); }
+function findT(from, test) { for (let t = from; t < HORIZON; t += DT) if (test(t)) return t; return HORIZON; }
+
+function stopSeq(trip) {
+  let u = pkt('pe_di', trip, LAT_DI, 'DI 0 · PartPresent = 1'); setTag(u, 'PartPresent', 1);
+  u += LAT_SCAN; setTag(u, 'Conveyor_Run', 0); const cmd = u;
+  u = pkt('do_vfd', u, LAT_DO, 'DO 0 · Run = 0'); RAMPS.push({ t0: u, t1: u + DEC, v0: V, v1: 0 });
+  WARPS.push({ t0: trip - 0.12, t1: u + DEC + 0.06, rate: 0.25 });
+  return { cmd, stop: u + DEC };
+}
+
+// 01 · operator starts the line
+M.hmi = 5.6;
+let t = pkt('hmi', M.hmi + 0.15, 1.0, 'HMI_Start = 1');
+setTag(t, 'HMI_Start', 1); setTag(t + 0.8, 'HMI_Start', 0); M.hmiAt = t;
+t += 0.2; M.run1 = t; setTag(t, 'Conveyor_Run', 1);
+const e1 = pkt('do_vfd', t, 0.55, 'DO 0 · Run = 1');
+setTag(t + 0.2, 'Speed_Ref', 60); const e2 = pkt('ao_vfd', t + 0.2, 0.55, 'AO 0 · 60 %  (6.0 V)');
+t = Math.max(e1, e2) + 0.1; t = pkt('vfd_motor', t, 0.8, '3-phase · 36 Hz');
+M.beltStart = t; RAMPS.push({ t0: t, t1: t + ACC, v0: 0, v1: V });
+// 02–03 · parts ride in, photo-eye trips
+M.trip1 = M.beltStart + ACC + 3.2;
+let r = stopSeq(M.trip1); M.stop1 = r.stop; M.stopCmd1 = r.cmd;
+buildS();
+const coast = S(M.stop1) - S(M.trip1);
+const xB = XC - coast + HALF;                          // photo-eye beam, placed so the part stops under the lens
+const parts = [{ cls: 'bolt', conf: 0.97 }, { cls: 'screw', conf: 0.95 }];
+const bolt = parts[0], screw = parts[1];
+bolt.x0 = XC - S(M.stop1); screw.x0 = bolt.x0 - PITCH;
+// 04 · camera + Jetson
+t = M.stop1 + 0.35; M.flash1 = t; pkt('cam_jet', t + 0.05, 0.6, 'frame · 1280×720');
+M.feed1 = { t0: t + 0.6, k: 1, part: bolt }; M.feed1.t1 = M.feed1.t0 + 6.0;
+// 05 · class travels to the PLC
+t = M.feed1.t1 + 0.15;
+M.eth1 = pkt('jet_plc', t, 1.8, 'Vision_Class = 1  ·  Seq 1'); setTag(M.eth1, 'Vision_Class', 1); setTag(M.eth1, 'Vision_Seq', 1);
+pkt('jet_sql', t + 0.35, 1.9, 'INSERT detection · bolt');
+// 06 · diverter
+t = M.eth1 + 1.3; M.divCmd1 = t; setTag(t, 'Div_Cmd', 1);
+t = pkt('do_div', t + 0.05, 1.1, 'DO 1 · Div_Cmd = 1'); FIN.push({ t0: t, t1: t + 0.7, a0: 0, a1: FIN_A }); M.swing1 = t;
+t = pkt('prox1_di', t + 0.75, 0.8, 'DI 1 · Div_InPos = 1'); setTag(t, 'Div_InPos', 1); M.inpos1 = t;
+t += 0.15; setTag(t, 'Conveyor_Run', 1); M.restart1 = t;
+t = pkt('do_vfd', t, 0.35, 'DO 0 · Run = 1'); RAMPS.push({ t0: t, t1: t + ACC, v0: 0, v1: V });
+buildS();
+setTag(findT(M.restart1, u => bolt.x0 + S(u) - HALF > xB), 'PartPresent', 0);
+bolt.tLeave = findT(M.restart1, u => bolt.x0 + S(u) >= X_HEAD);
+// 08 · the screw, one pitch behind
+M.trip2 = findT(M.restart1, u => screw.x0 + S(u) + HALF >= xB);
+r = stopSeq(M.trip2); M.stop2 = r.stop; M.stopCmd2 = r.cmd;
+buildS();
+const DIS_T = 1.5;
+bolt.tLand = bolt.tLeave + DIS_T; setTag(bolt.tLand, 'Cnt_Bolt', 1);
+t = M.stop2 + 0.3; M.flash2 = t; pkt('cam_jet', t + 0.05, 0.5, 'frame · 1280×720');
+M.feed2 = { t0: t + 0.5, k: 0.75, part: screw }; M.feed2.t1 = M.feed2.t0 + 6.0 * 0.75;
+t = M.feed2.t1 + 0.15;
+M.eth2 = pkt('jet_plc', t, 1.4, 'Vision_Class = 2  ·  Seq 2'); setTag(M.eth2, 'Vision_Class', 2); setTag(M.eth2, 'Vision_Seq', 2);
+pkt('jet_sql', t + 0.3, 1.5, 'INSERT detection · screw');
+t = M.eth2 + 1.0; M.divCmd2 = t; setTag(t, 'Div_Cmd', 2);
+t = pkt('do_div', t + 0.05, 0.9, 'DO 2 · Div_Cmd = 2'); setTag(t, 'Div_InPos', 0); FIN.push({ t0: t, t1: t + 0.8, a0: FIN_A, a1: -FIN_A }); M.swing2 = t;
+t = pkt('prox2_di', t + 0.85, 0.7, 'DI 2 · Div_InPos = 1'); setTag(t, 'Div_InPos', 1); M.inpos2 = t;
+t += 0.15; setTag(t, 'Conveyor_Run', 1); M.restart2 = t;
+t = pkt('do_vfd', t, 0.35, 'DO 0 · Run = 1'); RAMPS.push({ t0: t, t1: t + ACC, v0: 0, v1: V });
+buildS();
+setTag(findT(M.restart2, u => screw.x0 + S(u) - HALF > xB), 'PartPresent', 0);
+screw.tLeave = findT(M.restart2, u => screw.x0 + S(u) >= X_HEAD);
+screw.tLand = screw.tLeave + DIS_T; setTag(screw.tLand, 'Cnt_Screw', 1);
+// 09 · recap
+M.summary = screw.tLand + 1.2;
+const RECAP = [
+  ['hmi', 'HMI → PLC', 'Ethernet · start command'],
+  ['do_vfd', 'PLC → drive', 'DO 0 run  +  AO 0 speed'],
+  ['vfd_motor', 'Drive → motor', '3-phase power'],
+  ['pe_di', 'Photo-eye → PLC', 'DI 0 part present'],
+  ['cam_jet', 'Camera → Jetson', 'video frame'],
+  ['jet_plc', 'Jetson → PLC', 'Vision_Class 1 / 2'],
+  ['do_div', 'PLC → diverter', 'DO 1 / DO 2'],
+  ['prox1_di', 'Diverter → PLC', 'DI 1 / DI 2 in position'],
+  ['jet_sql', 'Jetson + PLC → SQL', 'detections, counts, status'],
+];
+RECAP.forEach((rc, i) => { pkt(rc[0], M.summary + 0.9 + i * 0.85, 0.9, String(i + 1)); if (rc[0] === 'jet_sql') pkt('plc_sql', M.summary + 0.9 + i * 0.85, 0.9, String(i + 1)); });
+M.endCard = M.summary + 0.9 + RECAP.length * 0.85 + 2.2;
+M.end = M.endCard + 5.5;
+EV.sort((a, b) => a.t - b.t);
+
+// ---------------------------------------------------------------- video time ⇄ world time
+WARPS.sort((a, b) => a.t0 - b.t0);
+const PACE = 0.62;                                       // world seconds per video second
+function videoFromWorld(tw) { let tv = tw; for (const w of WARPS) tv += Math.max(0, Math.min(tw, w.t1) - w.t0) * (1 / w.rate - 1); return tv / PACE; }
+function worldFromVideo(tv) { let lo = 0, hi = M.end; for (let i = 0; i < 50; i++) { const mid = (lo + hi) / 2; videoFromWorld(mid) < tv ? lo = mid : hi = mid; } return (lo + hi) / 2; }
+const DURATION = videoFromWorld(M.end);
+const slowMo = tw => WARPS.some(w => tw > w.t0 && tw < w.t1);
+
+// ---------------------------------------------------------------- tags
+const TAGS = [
+  ['HMI_Start', 'BOOL', 'HMI'],
+  ['Conveyor_Run', 'BOOL', 'DO 0'],
+  ['Speed_Ref', 'REAL', 'AO 0', v => v.toFixed(1) + ' %'],
+  ['PartPresent', 'BOOL', 'DI 0'],
+  ['Vision_Class', 'INT', 'Jetson', v => v === 1 ? '1 · bolt' : v === 2 ? '2 · screw' : '0'],
+  ['Vision_Seq', 'INT', 'Jetson'],
+  ['Div_Cmd', 'INT', 'DO 1/2', v => v === 1 ? '1 · Bin 1' : v === 2 ? '2 · Bin 2' : '0'],
+  ['Div_InPos', 'BOOL', 'DI 1/2'],
+  ['Cnt_Bolt', 'DINT', 'PLC'],
+  ['Cnt_Screw', 'DINT', 'PLC'],
+];
+function tag(k, tw) { let v = 0, at = -99; for (const e of EV) { if (e.t > tw) break; if (e.k === k) { v = e.v; at = e.t; } } return { v, at }; }
+
+// ---------------------------------------------------------------- cables (world polylines)
+const zcd = zc(PIV) + 0.46, zpr = zc(4.45) + .12;
+const LINKS = {
+  hmi:       { type: 'eth', pts: [[-2.6, 2.34, 1.25], [-2.6, 2.34, .03], [2.45, 2.34, .03], [2.45, 2.72, .03], [2.45, 2.72, .6], [2.52, 2.8, 2.12]] },
+  jet_plc:   { type: 'eth', pts: [[.66, 1.92, .92], [.72, 2.2, .9], [.72, 2.22, .03], [2.58, 2.22, .03], [2.58, 2.7, .03], [2.58, 2.7, .6], [2.62, 2.8, 2.12]] },
+  cam_jet:   { type: 'video', pts: [[1.4, .14, 2.82], [1.4, 1.26, 2.97], [1.31, 1.29, 2.9], [1.31, 1.29, 1.02], [.62, 1.86, .97]] },
+  pe_di:     { type: 'di', pts: [[xB, -1.06, 1.34], [xB, -1.06, .03], [xB, 2.28, .03], [3.0, 2.28, .03], [3.0, 2.74, .03], [3.0, 2.74, .6], [3.0, 2.82, 2.04]] },
+  do_vfd:    { type: 'di', pts: [[3.23, 2.82, 2.0], [3.23, 2.8, 1.96], [3.9, 2.8, 1.96], [3.9, 2.79, 1.88]] },
+  ao_vfd:    { type: 'ao', pts: [[3.46, 2.82, 2.0], [3.46, 2.78, 1.99], [4.1, 2.78, 1.99], [4.1, 2.78, 1.88]] },
+  vfd_motor: { type: 'pwr', pts: [[4.2, 2.8, 1.05], [4.2, 2.74, .6], [4.2, 2.7, .03], [4.26, -1.45, .03], [4.26, -1.45, .86]] },
+  do_div:    { type: 'di', pts: [[3.28, 2.82, 2.02], [3.28, 2.74, .6], [3.28, 2.6, .03], [5.72, 2.6, .03], [5.72, .14, .03], [PIV, .14, .03], [PIV, .14, zcd]] },
+  prox1_di:  { type: 'di', pts: [[4.45, .7, zpr], [4.45, 1.66, zpr], [4.45, 1.66, .03], [4.45, 2.46, .03], [3.05, 2.46, .03], [3.05, 2.74, .6], [3.05, 2.82, 2.05]] },
+  prox2_di:  { type: 'di', pts: [[4.45, -.7, zpr], [4.45, -1.66, zpr], [4.45, -1.66, .03], [5.9, -1.66, .03], [5.9, 2.52, .03], [3.08, 2.52, .03], [3.08, 2.74, .6], [3.08, 2.82, 2.05]] },
+  jet_sql:   { type: 'eth', pts: [[.2, 2.06, .92], [.12, 2.2, .03], [.12, 3.8, .03], [-1.7, 3.8, .03], [-1.7, 3.98, .45]] },
+  plc_sql:   { type: 'eth', pts: [[2.4, 2.75, .6], [2.32, 2.9, .03], [2.32, 3.7, .03], [-1.5, 3.7, .03], [-1.5, 3.98, .7]] },
+};
+for (const L of Object.values(LINKS)) {
+  L.len = [0]; for (let i = 1; i < L.pts.length; i++) L.len.push(L.len[i - 1] + Math.hypot(...sub(L.pts[i], L.pts[i - 1])));
+  L.total = L.len[L.len.length - 1];
+}
+function along(L, u) { const d = clamp(u) * L.total; let i = 1; while (i < L.len.length - 1 && L.len[i] < d) i++;
+  const k = (d - L.len[i - 1]) / ((L.len[i] - L.len[i - 1]) || 1), a = L.pts[i - 1], b = L.pts[i];
+  return [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)]; }
+
+// ---------------------------------------------------------------- camera
+let cam = null;
+function setCam(c) {
+  const a = c.a * D2R, p = c.p * D2R;
+  const Cp = [c.T[0] + c.D * Math.cos(p) * Math.cos(a), c.T[1] + c.D * Math.cos(p) * Math.sin(a), c.T[2] + c.D * Math.sin(p)];
+  const f = norm(sub(c.T, Cp)), rr = norm(cross(f, [0, 0, 1])), u = cross(rr, f);
+  cam = { C: Cp, f, r: rr, u, F: (H / 2) / Math.tan(30 * D2R / 2), cx: W / 2 + (c.sx || 0), cy: H / 2 + (c.sy || 0) };
+}
+function P(p) { const v = sub(p, cam.C), z = dot(v, cam.f); return [cam.cx + dot(v, cam.r) * cam.F / z, cam.cy - dot(v, cam.u) * cam.F / z, z]; }
+const KEYS = [
+  [0,                 { T: [.3, .9, 1.0],   a: -134, p: 31, D: 25 }],
+  [4.6,               { T: [.2, 1.0, 1.1],  a: -121, p: 27, D: 22 }],
+  [M.hmi,             { T: [.6, 2.0, 1.5],  a: -101, p: 20, D: 14.5 }],
+  [M.beltStart + .2,  { T: [1.4, .8, 1.2],  a: -108, p: 25, D: 15.5 }],
+  [M.trip1 - 1.8,     { T: [-.9, .2, 1.2],  a: -100, p: 30, D: 14 }],
+  [M.trip1 - .05,     { T: [XC - .6, 0, 1.4], a: -93, p: 24, D: 9.5 }],
+  [M.stop1 + .45,     { T: [XC, .15, 2.0],  a: -77, p: 15, D: 7.3 }],
+  [M.feed1.t1,        { T: [XC, .15, 2.0],  a: -73, p: 16, D: 7.6 }],
+  [M.feed1.t1 + .7,   { T: [1.6, 1.9, 1.7], a: -104, p: 34, D: 11.5 }],
+  [M.divCmd1 + .1,    { T: [4.9, .6, 1.2],  a: -64, p: 34, D: 10.5 }],
+  [M.restart1 + .6,   { T: [4.0, .1, 1.1],  a: -76, p: 28, D: 11.5 }],
+  [bolt.tLand + .1,   { T: [2.2, .3, 1.3],  a: -103, p: 30, D: 14.5 }],
+  [M.trip2 - .05,     { T: [XC - .6, 0, 1.4], a: -95, p: 24, D: 9.5 }],
+  [M.stop2 + .4,      { T: [XC, .15, 2.0],  a: -81, p: 16, D: 7.5 }],
+  [M.feed2.t1,        { T: [XC, .15, 2.0],  a: -78, p: 16, D: 7.7 }],
+  [M.feed2.t1 + .6,   { T: [2.3, 1.6, 1.6], a: -100, p: 36, D: 12.5 }],
+  [M.divCmd2 + .1,    { T: [4.9, .6, 1.2],  a: -58, p: 34, D: 10.5 }],
+  [M.restart2 + .6,   { T: [4.3, .4, 1.1],  a: -72, p: 28, D: 11.5 }],
+  [M.summary,         { T: [.6, 1.3, 1.1],  a: -128, p: 38, D: 22 }],
+  [M.endCard,         { T: [.6, 1.3, 1.1],  a: -106, p: 33, D: 23 }],
+  [M.end,             { T: [.6, 1.3, 1.1],  a: -97, p: 30, D: 25 }],
+];
+function camAt(tw) {
+  if (window.__camOverride) return window.__camOverride;           // review tooling only
+  let i = 0; while (i < KEYS.length - 2 && KEYS[i + 1][0] <= tw) i++;
+  const [t0, A] = KEYS[i], [t1, B] = KEYS[i + 1], u = ease(seg(tw, t0, t1));
+  const c = { T: [0, 1, 2].map(k => lerp(A.T[k], B.T[k], u)), a: lerp(A.a, B.a, u), p: lerp(A.p, B.p, u), D: lerp(A.D, B.D, u) };
+  c.a += 1.2 * Math.sin(tw * .23); c.p += .6 * Math.sin(tw * .17 + 1);
+  const panels = win(tw, 4.4, M.endCard + .6, 1.2, 1.2);
+  const feed = Math.max(win(tw, M.feed1.t0, M.feed1.t1, .4, .45), win(tw, M.feed2.t0, M.feed2.t1, .3, .35));
+  c.sx = -190 * smooth(panels) * (1 - feed); c.sy = 20 * smooth(panels);
+  return c;
+}
+
+// ---------------------------------------------------------------- 3D item list + primitives
+let items = [], glows = [], texts = [];
+const L1 = norm([-.45, -.7, 1]), L2 = norm([.8, .45, .35]);
+function shadeRGB(col, N, depth) {
+  const l = .36 + .78 * Math.max(0, dot(N, L1)) + .26 * Math.max(0, dot(N, L2));
+  const fog = clamp((depth - 13) / 34) * .5;
+  return [col[0] * l * (1 - fog), col[1] * l * (1 - fog), col[2] * l * (1 - fog)];
+}
+function poly(pts, col, o = {}) {
+  const pr = pts.map(P); if (pr.some(p => p[2] < .2)) return;
+  let nx = 0, ny = 0, nz = 0, cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length];
+    nx += (a[1] - b[1]) * (a[2] + b[2]); ny += (a[2] - b[2]) * (a[0] + b[0]); nz += (a[0] - b[0]) * (a[1] + b[1]);
+    cx += a[0]; cy += a[1]; cz += a[2]; }
+  const n = pts.length, N = norm([nx, ny, nz]), cen = [cx / n, cy / n, cz / n];
+  if (!o.two && dot(N, sub(cam.C, cen)) <= 0) return;
+  let depth = 0; for (const p of pr) depth += p[2]; depth /= n;
+  let fill;
+  if (o.emit) fill = o.emit;
+  else { const s = shadeRGB(col, o.two && dot(N, sub(cam.C, cen)) < 0 ? N.map(v => -v) : N, depth); fill = `rgb(${s[0] | 0},${s[1] | 0},${s[2] | 0})`; }
+  items.push({ k: 0, pr, d: depth - (o.bias || 0), fill, stroke: o.stroke === undefined ? 'rgba(255,255,255,.045)' : o.stroke, a: o.alpha ?? 1 });
+}
+function box(x0, y0, z0, x1, y1, z1, col, o = {}) {
+  const v = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+  const F = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]];
+  for (let i = 0; i < 6; i++) { if (o.skip && o.skip.includes(i)) continue; poly(F[i].map(j => v[j]), col, o); }
+}
+function boxSplit(x0, y0, z0, x1, y1, z1, col, n, o) { for (let i = 0; i < n; i++) box(lerp(x0, x1, i / n), y0, z0, lerp(x0, x1, (i + 1) / n), y1, z1, col, o); }
+function xform(pos, rz = 0, ry = 0, rx = 0) {
+  const cxr = Math.cos(rx), sxr = Math.sin(rx), cyr = Math.cos(ry), syr = Math.sin(ry), czr = Math.cos(rz), szr = Math.sin(rz);
+  return p => { let [x, y, z] = p;
+    [y, z] = [y * cxr - z * sxr, y * sxr + z * cxr];
+    [x, z] = [x * cyr + z * syr, -x * syr + z * cyr];
+    [x, y] = [x * czr - y * szr, x * szr + y * czr];
+    return [x + pos[0], y + pos[1], z + pos[2]]; };
+}
+function cyl(nSeg, r0, r1, z0, z1, T, col, o = {}) {       // along local z, then T
+  const a = [], b = [];
+  for (let i = 0; i < nSeg; i++) { const th = (i + (o.phase || 0)) / nSeg * Math.PI * 2;
+    a.push(T([r0 * Math.cos(th), r0 * Math.sin(th), z0])); b.push(T([r1 * Math.cos(th), r1 * Math.sin(th), z1])); }
+  for (let i = 0; i < nSeg; i++) { const j = (i + 1) % nSeg; poly([a[i], a[j], b[j], b[i]], col, o); }
+  if (!o.noCap1 && r1 > .002) poly(b, o.capCol || col, o);
+  if (!o.noCap0 && r0 > .002) poly([...a].reverse(), o.capCol || col, o);
+}
+function line3(a, b, col, w = 1.5, o = {}) {
+  const pa = P(a), pb = P(b); if (pa[2] < .2 || pb[2] < .2) return;
+  items.push({ k: 1, pa, pb, d: (pa[2] + pb[2]) / 2 - (o.bias || 0), col, w: o.px ? w : Math.max(1, w * cam.F / ((pa[2] + pb[2]) / 2) * .012), dash: o.dash });
+}
+function glow(p, r, col, a = 1) { const q = P(p); if (q[2] > .2) glows.push({ x: q[0], y: q[1], r: r * cam.F / q[2], col, a }); }
+function text3(str, p, size, col, o = {}) { const q = P(p); if (q[2] > .2) texts.push({ str, x: q[0], y: q[1], px: size * cam.F / q[2], col, align: o.align || 'center', weight: o.weight || 600, mono: o.mono, a: o.a ?? 1 }); }
+function floorShadow(x0, y0, x1, y1, a = .5) {
+  for (let k = 0; k < 3; k++) { const e = .08 + k * .16;
+    const pts = [[x0 - e, y0 - e, .002], [x1 + e, y0 - e, .002], [x1 + e, y1 + e, .002], [x0 - e, y1 + e, .002]].map(P);
+    if (pts.some(p => p[2] < .2)) continue;
+    g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath();
+    g.fillStyle = `rgba(0,0,0,${a / 3})`; g.fill(); }
+}
+
+// ---------------------------------------------------------------- floor
+function drawFloor(tw) {
+  const gr = g.createRadialGradient(W / 2, H * .62, 50, W / 2, H * .62, W * .7);
+  gr.addColorStop(0, 'rgba(40,70,100,.16)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  g.lineWidth = 1;
+  const lineF = (a, b, major) => { const pa = P(a), pb = P(b); if (pa[2] < .5 || pb[2] < .5) return;
+    const fade = clamp(1 - ((pa[2] + pb[2]) / 2 - 8) / 30);
+    g.strokeStyle = `rgba(120,170,220,${(major ? .11 : .05) * fade})`; g.beginPath(); g.moveTo(pa[0], pa[1]); g.lineTo(pb[0], pb[1]); g.stroke(); };
+  for (let x = -10; x <= 10; x++) for (let y = -6; y < 7; y++) lineF([x, y, 0], [x, y + 1, 0], x % 5 === 0);
+  for (let y = -6; y <= 7; y++) for (let x = -10; x < 10; x++) lineF([x, y, 0], [x + 1, y, 0], y % 5 === 0);
+  floorShadow(X_TAIL - .2, -.9, X_HEAD + .2, .9, .6);
+  floorShadow(2.2, 2.6, 4.6, 3.2, .5); floorShadow(4.3, -1.6, 6.0, 1.6, .35);
+  floorShadow(6.15, -1.55, 7.35, 1.55, .45); floorShadow(-2.2, 4.0, -1.3, 4.7, .5);
+  floorShadow(.1, 1.65, .7, 2.15, .4); floorShadow(-3.05, 2.2, -2.15, 2.45, .35);
+}
+
+// ---------------------------------------------------------------- plant model
+const STEEL = [104, 116, 132], FRAME = [78, 88, 102], DARK = [34, 38, 46], BELT = [38, 42, 48];
+function drawPlant(tw) {
+  const s = S(tw), run = vAt(tw) > .01;
+  // conveyor legs + braces
+  for (const x of [-6.6, -2.4, 1.8, 3.9]) {
+    for (const y of [-.8, .8]) box(x - .06, y - .06, 0, x + .06, y + .06, .95, FRAME);
+    box(x - .04, -.8, .32, x + .04, .8, .38, FRAME);
+  }
+  // side channels + guide rails
+  boxSplit(X_TAIL, -.86, .95, X_HEAD, -.76, 1.25, STEEL, 12);
+  boxSplit(X_TAIL, .76, .95, X_HEAD, .86, 1.25, STEEL, 12);
+  boxSplit(X_TAIL + .2, -.84, 1.3, X_HEAD - .1, -.78, 1.36, [150, 160, 172], 12);
+  boxSplit(X_TAIL + .2, .78, 1.3, X_HEAD - .1, .84, 1.36, [150, 160, 172], 12);
+  for (const x of [-5.6, -3.4, -1.2, 1.0, 3.2]) for (const y of [-.81, .81]) box(x - .02, y - .02, 1.25, x + .02, y + .02, 1.3, STEEL);
+  // belt top in strips, plus moving seams
+  const nS = 24;
+  for (let i = 0; i < nS; i++) box(lerp(X_TAIL, X_HEAD, i / nS), -BW, 1.14, lerp(X_TAIL, X_HEAD, (i + 1) / nS), BW, ZB, BELT, { skip: [0, 3] });
+  const len = X_HEAD - X_TAIL;
+  for (let j = 0; j < 25; j++) { const x = X_TAIL + ((j * .45 + s) % len + len) % len;
+    if (x < X_TAIL + .05 || x > X_HEAD - .05) continue;
+    poly([[x, -BW, ZB + .002], [x + .03, -BW, ZB + .002], [x + .03, BW, ZB + .002], [x, BW, ZB + .002]], [58, 63, 72], { bias: .05, stroke: null }); }
+  // rollers
+  for (const x of [X_TAIL, X_HEAD]) {
+    const T = xform([x, 0, 1.1], 0, 0, -Math.PI / 2);
+    cyl(14, .1, .1, -.76, .76, T, [120, 130, 142], { phase: s / .1 / (Math.PI * 2) * 14 });
+    const ang = s / .1;
+    line3([x, -.77, 1.1], [x + .09 * Math.cos(ang), -.77, 1.1 + .09 * Math.sin(ang)], 'rgba(255,255,255,.35)', 2, { px: 1, bias: .2 });
+  }
+  // motor + gearbox (drive end, front side)
+  box(3.95, -1.15, .92, 4.35, -.86, 1.26, [74, 84, 98]);
+  const Tm = xform([4.15, -1.15, 1.08], 0, 0, Math.PI / 2);
+  cyl(18, .2, .2, 0, .58, Tm, [58, 86, 130]);
+  cyl(18, .17, .17, .58, .66, Tm, [40, 52, 70]);
+  box(4.05, -1.55, 1.28, 4.25, -1.35, 1.36, [58, 86, 130]);
+  const ma = s / .12;
+  line3([4.15, -1.815, 1.08], [4.15 + .14 * Math.cos(ma), -1.815, 1.08 + .14 * Math.sin(ma)], 'rgba(255,255,255,.5)', 2.5, { px: 1, bias: .2 });
+  if (run) glow([4.15, -1.84, 1.08], .1, C.pwr, .25);
+  // photo-eye (emitter + reflector) and beam
+  const pp = tag('PartPresent', tw).v;
+  for (const side of [-1, 1]) {
+    const y = side * .98;
+    box(xB - .035, y - .04, .95, xB + .035, y + .04, 1.28, [90, 96, 104]);
+    box(xB - .07, y - .07 * (side < 0 ? 1 : .6), 1.27, xB + .07, y + .07 * (side < 0 ? .6 : 1), 1.41, side < 0 ? [226, 186, 40] : [120, 40, 46]);
+  }
+  const partNear = parts.find(q => { const ps = partPose(q, tw); return ps.onBelt && Math.abs(ps.x - xB) < HALF; });
+  const yEnd = partNear ? -.14 : .9;
+  line3([xB, -.91, 1.34], [xB, yEnd, 1.34], rgba(C.red, .85), 2, { px: 1, bias: .15 });
+  glow([xB, -.92, 1.34], .06, C.red, .8);
+  if (partNear) glow([xB, -.14, 1.34], .09, C.red, .9);
+  if (pp) glow([xB - .05, -1.06, 1.4], .05, '#ffb020', 1);
+  poly([[xB - .03, -1.051, 1.37], [xB + .03, -1.051, 1.37], [xB + .03, -1.051, 1.4], [xB - .03, -1.051, 1.4]], null, { emit: pp ? '#ffb020' : '#4a3a10', bias: .1, stroke: null });
+
+  // camera gantry
+  box(1.1, 1.12, 0, 1.6, 1.62, .05, FRAME);
+  box(1.33, 1.3, 0, 1.47, 1.44, 3.05, STEEL);
+  boxSplit(1.34, 0, 2.94, 1.46, 1.44, 3.05, STEEL, 1);
+  box(1.34, -.02, 2.94, 1.46, .6, 3.05, STEEL); box(1.34, .6, 2.94, 1.46, 1.3, 3.05, STEEL);
+  box(1.24, -.13, 2.62, 1.56, .13, 2.92, [44, 50, 60]);
+  const Tl = xform([1.4, 0, 0]);
+  cyl(16, .075, .075, 2.48, 2.62, Tl, [22, 24, 28]);
+  const flash = Math.max(win(tw, M.flash1 - .05, M.feed1.t1, .15, .6), win(tw, M.flash2 - .05, M.feed2.t1, .15, .6));
+  const pop = Math.max(1 - seg(tw, M.flash1, M.flash1 + .5), 0) * (tw > M.flash1 ? 1 : 0) + Math.max(1 - seg(tw, M.flash2, M.flash2 + .5), 0) * (tw > M.flash2 ? 1 : 0);
+  for (let i = 0; i < 12; i++) { const th = i / 12 * Math.PI * 2, x = 1.4 + .17 * Math.cos(th), y = .17 * Math.sin(th);
+    box(x - .018, y - .018, 2.56, x + .018, y + .018, 2.59, null, { emit: flash > .05 ? `rgba(230,245,255,${.4 + .6 * flash})` : '#3a4350', stroke: null }); }
+  if (flash > .02) { glow([1.4, 0, 2.55], .35, '#dff6ff', .35 * flash + .6 * pop);
+    const fr = [[XC - 1.6, -.9], [XC + 1.6, -.9], [XC + 1.6, .9], [XC - 1.6, .9]];
+    fr.forEach((c, i) => { const n2 = fr[(i + 1) % 4];
+      line3([1.4, 0, 2.48], [c[0], c[1], ZB + .01], rgba(C.video, .45 * flash), 1.4, { px: 1, bias: 1 });
+      line3([c[0], c[1], ZB + .01], [n2[0], n2[1], ZB + .01], rgba(C.video, .8 * flash), 2, { px: 1, bias: 1 }); });
+  }
+  // Jetson stand
+  box(.1, 1.65, .84, .7, 2.15, .9, FRAME); box(.34, 1.84, 0, .46, 1.96, .84, FRAME); box(.18, 1.72, 0, .62, 2.08, .04, FRAME);
+  box(.2, 1.75, .9, .6, 2.05, .93, [26, 96, 64]);
+  box(.28, 1.8, .93, .52, 2.0, .97, [22, 24, 28]);
+  for (let i = 0; i < 7; i++) { const x = .29 + i * .036; box(x, 1.8, .97, x + .012, 2.0, 1.05, [40, 44, 50]); }
+  box(.56, 1.77, .93, .6, 1.83, .96, [140, 146, 152]);
+  const jetBusy = win(tw, M.feed1.t0, M.feed1.t1 + .4, .1, .2) + win(tw, M.feed2.t0, M.feed2.t1 + .4, .1, .2);
+  poly([[.58, 1.749, .905], [.6, 1.749, .905], [.6, 1.749, .925], [.58, 1.749, .925]], null, { emit: jetBusy > .1 && Math.floor(tw * 12) % 2 ? '#7cffb2' : '#2f9e62', stroke: null, bias: .05 });
+  if (jetBusy > .1) glow([.4, 1.9, 1.05], .45, '#3ee07f', .18 * jetBusy);
+
+  // control cabinet (open front, faces the viewer)
+  const SH = [64, 72, 84];
+  box(2.2, 3.1, .52, 4.6, 3.2, 3.0, SH); box(2.2, 2.6, .52, 2.28, 3.1, 3.0, SH); box(4.52, 2.6, .52, 4.6, 3.1, 3.0, SH);
+  box(2.28, 2.6, 2.92, 4.52, 3.1, 3.0, SH); box(2.28, 2.6, .52, 4.52, 3.1, .6, SH);
+  for (const x of [2.25, 4.55]) for (const y of [2.65, 3.15]) box(x - .04, y - .04, 0, x + .04, y + .04, .52, FRAME);
+  box(2.28, 3.07, .6, 4.52, 3.1, 2.92, [44, 50, 58]);
+  box(2.35, 3.0, 2.28, 4.45, 3.07, 2.34, [150, 156, 164]);
+  box(2.35, 2.96, 1.93, 4.45, 3.07, 2.0, [96, 102, 110]); box(2.35, 2.96, .86, 4.45, 3.07, .93, [96, 102, 110]);
+  // PLC CPU + I/O cards
+  box(2.42, 2.82, 2.0, 2.86, 3.07, 2.62, [46, 52, 62]);
+  const cards = [['DI', 2.9], ['DO', 3.13], ['AO', 3.36]];
+  cards.forEach(([n, x]) => box(x, 2.84, 2.0, x + .2, 3.07, 2.62, [52, 58, 68]));
+  const led = (x, z, on, col) => { poly([[x, 2.815, z], [x + .045, 2.815, z], [x + .045, 2.815, z + .03], [x, 2.815, z + .03]], null, { emit: on ? col : '#1c232c', stroke: null, bias: .05 });
+    if (on) glow([x + .022, 2.81, z + .015], .05, col, .9); };
+  const ledC = (x, z, on, col) => { poly([[x, 2.835, z], [x + .045, 2.835, z], [x + .045, 2.835, z + .03], [x, 2.835, z + .03]], null, { emit: on ? col : '#1c232c', stroke: null, bias: .05 });
+    if (on) glow([x + .022, 2.83, z + .015], .05, col, .9); };
+  led(2.47, 2.52, true, '#3ee07f'); led(2.47, 2.46, Math.floor(tw * 1.6) % 2 === 0, '#3ee07f');
+  const ethRx = PK.some(k => (k.link === 'jet_plc' || k.link === 'hmi') && tw > k.t1 - .05 && tw < k.t1 + .5);
+  led(2.47, 2.14, ethRx && Math.floor(tw * 20) % 2 === 0, '#ffb020');
+  poly([[2.56, 2.815, 2.08], [2.7, 2.815, 2.08], [2.7, 2.815, 2.18], [2.56, 2.815, 2.18]], null, { emit: '#0b0e12', stroke: null, bias: .04 });
+  const di = [tag('PartPresent', tw).v, tag('Div_InPos', tw).v && tag('Div_Cmd', tw).v === 1, tag('Div_InPos', tw).v && tag('Div_Cmd', tw).v === 2];
+  const dout = [tag('Conveyor_Run', tw).v, tag('Div_Cmd', tw).v === 1, tag('Div_Cmd', tw).v === 2];
+  for (let i = 0; i < 3; i++) { ledC(2.975, 2.5 - i * .07, !!di[i], C.di); ledC(3.205, 2.5 - i * .07, !!dout[i], C.di); }
+  const sp = tag('Speed_Ref', tw).v;
+  for (let i = 0; i < 5; i++) ledC(3.435, 2.22 + i * .065, sp / 100 * 5 > i + .5, C.ao);
+  text3('PLC', [2.64, 2.8, 2.56], .07, '#cfd8e3', { weight: 700 });
+  cards.forEach(([n, x]) => text3(n, [x + .1, 2.83, 2.565], .055, '#9fb0c2', { weight: 700 }));
+  // VFD
+  box(3.7, 2.8, 1.05, 4.35, 3.07, 1.88, [56, 62, 72]);
+  poly([[3.78, 2.795, 1.6], [4.12, 2.795, 1.6], [4.12, 2.795, 1.78], [3.78, 2.795, 1.78]], null, { emit: '#061b1f', stroke: null, bias: .04 });
+  const hz = vAt(tw) / V * 36;
+  text3(hz.toFixed(1) + ' Hz', [3.95, 2.79, 1.66], .075, '#5ff0e0', { mono: 1, weight: 600 });
+  poly([[4.2, 2.795, 1.7], [4.26, 2.795, 1.7], [4.26, 2.795, 1.74], [4.2, 2.795, 1.74]], null, { emit: vAt(tw) > .01 ? C.di : '#1c232c', stroke: null, bias: .04 });
+  text3('VFD', [4.02, 2.79, 1.2], .06, '#9fb0c2', { weight: 700 });
+  for (let i = 0; i < 14; i++) box(2.4 + i * .07, 2.9, .95, 2.4 + i * .07 + .05, 3.07, 1.12, i % 4 === 3 ? [60, 90, 150] : [130, 136, 144]);
+  box(2.42, 2.9, 1.3, 2.84, 3.07, 1.7, [150, 154, 160]);
+
+  // HMI
+  box(-2.65, 2.3, 0, -2.55, 2.4, 1.25, FRAME);
+  box(-3.05, 2.25, 1.25, -2.15, 2.33, 1.86, [44, 48, 56]);
+  poly([[-3.0, 2.248, 1.3], [-2.2, 2.248, 1.3], [-2.2, 2.248, 1.81], [-3.0, 2.248, 1.81]], null, { emit: '#07121c', stroke: null, bias: .04 });
+  const pressed = tw > M.hmi - .05 && tw < M.hmi + .6;
+  poly([[-2.95, 2.246, 1.36], [-2.63, 2.246, 1.36], [-2.63, 2.246, 1.52], [-2.95, 2.246, 1.52]], null, { emit: pressed ? '#5bff9a' : '#1f6b3e', stroke: null, bias: .06 });
+  poly([[-2.55, 2.246, 1.36], [-2.25, 2.246, 1.36], [-2.25, 2.246, 1.52], [-2.55, 2.246, 1.52]], null, { emit: '#6b1f28', stroke: null, bias: .06 });
+  if (pressed) glow([-2.79, 2.24, 1.44], .25, '#5bff9a', .8);
+  text3('START', [-2.79, 2.24, 1.415], .055, '#e8fff0', { weight: 800 }); text3('STOP', [-2.4, 2.24, 1.415], .055, '#ffe8ea', { weight: 800 });
+  const runNow = tag('Conveyor_Run', tw).v;
+  text3(runNow ? '● RUN' : '○ STOP', [-2.6, 2.24, 1.66], .06, runNow ? '#5bff9a' : '#8592a3', { mono: 1 });
+
+  // chute, diverter, bins
+  const zc0 = zc(4.3), zc1 = zc(6.0);
+  for (let i = 0; i < 4; i++) { const xa = lerp(4.3, 6.0, i / 4), xb = lerp(4.3, 6.0, (i + 1) / 4);
+    poly([[xa, -1.6, zc(xa)], [xb, -1.6, zc(xb)], [xb, 1.6, zc(xb)], [xa, 1.6, zc(xa)]], [82, 92, 106], { two: 1 });
+    for (const y of [-1.6, 1.6]) poly([[xa, y, zc(xa)], [xb, y, zc(xb)], [xb, y, zc(xb) + .22], [xa, y, zc(xa) + .22]], [110, 120, 134], { two: 1 }); }
+  for (const x of [4.45, 5.85]) for (const y of [-1.5, 1.5]) box(x - .05, y - .05, 0, x + .05, y + .05, zc(x), FRAME);
+  // Y-chute diverter: pivot at the split, fin reaches upstream; +FIN_A puts the free end on the +y wall -> parts go to Bin 1 (-y)
+  const fin = finAngle(tw), zp = zc(PIV), slope = Math.atan(.2 / 1.7);
+  const Tf = xform([PIV, 0, zp + .012], -fin, slope);
+  const fv = [[-FIN_L, -.025, 0], [0, -.025, 0], [0, .025, 0], [-FIN_L, .025, 0], [-FIN_L, -.025, .3], [0, -.025, .3], [0, .025, .3], [-FIN_L, .025, .3]].map(Tf);
+  [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]].forEach(f => poly(f.map(j => fv[j]), [196, 206, 218], { bias: .1 }));
+  for (const xa of [PIV + .06, PIV + .25]) { const xb = Math.min(6.0, xa + .19);          // fixed divider between the two branches
+    for (const y of [-.025, .025]) poly([[xa, y, zc(xa)], [xb, y, zc(xb)], [xb, y, zc(xb) + .26], [xa, y, zc(xa) + .26]], [150, 160, 172], { two: 1, bias: .05 });
+    poly([[xa, -.025, zc(xa) + .26], [xb, -.025, zc(xb) + .26], [xb, .025, zc(xb) + .26], [xa, .025, zc(xa) + .26]], [150, 160, 172], { bias: .05 }); }
+  box(PIV + .44, -.025, zc(6.0), 6.0, .025, zc(6.0) + .26, [150, 160, 172]);
+  cyl(12, .055, .055, zp, zp + .42, xform([PIV, 0, 0]), [120, 128, 138]);
+  box(PIV - .12, -.11, zp + .42, PIV + .12, .11, zp + .64, [80, 90, 104]);
+  const cmd = tag('Div_Cmd', tw).v, moving = FIN.some(f => tw > f.t0 && tw < f.t1);
+  poly([[PIV - .06, -.111, zp + .5], [PIV, -.111, zp + .5], [PIV, -.111, zp + .56], [PIV - .06, -.111, zp + .56]], null, { emit: moving ? '#ffb020' : cmd ? C.di : '#1c232c', stroke: null, bias: .05 });
+  for (const side of [1, -1]) {                                   // +y sensor sees the fin in the Bin 1 position, -y in Bin 2
+    const inPos = Math.abs(fin - side * FIN_A) < .02, y = side * .7, z0 = zc(4.45);
+    box(4.39, y - .05, z0, 4.51, y + .05, z0 + .16, [226, 186, 40]);
+    if (inPos) glow([4.45, y, z0 + .2], .07, C.di, 1);
+    poly([[4.42, y - side * .051, z0 + .1], [4.48, y - side * .051, z0 + .1], [4.48, y - side * .051, z0 + .14], [4.42, y - side * .051, z0 + .14]], null,
+         { emit: inPos ? C.di : '#1c232c', stroke: null, bias: .06, two: 1 }); }
+  bin(6.15, -1.55, 7.35, -.15, hex2rgb(C.bolt), 'BIN 1 · BOLT', C.bolt);
+  bin(6.15, .15, 7.35, 1.55, hex2rgb(C.screw), 'BIN 2 · SCREW', C.screw);
+
+  // Ignition + SQL server
+  box(-2.2, 4.0, 0, -1.3, 4.7, 2.1, [30, 34, 42]);
+  for (let i = 0; i < 7; i++) { const z = .25 + i * .26;
+    box(-2.14, 3.97, z, -1.36, 4.0, z + .2, [44, 50, 60]);
+    for (let k = 0; k < 3; k++) { const on = (Math.floor(tw * (3 + i) + k * 1.7 + i) % 3) === 0 || sqlHit(tw);
+      poly([[-1.52 + k * .045, 3.965, z + .08], [-1.49 + k * .045, 3.965, z + .08], [-1.49 + k * .045, 3.965, z + .11], [-1.52 + k * .045, 3.965, z + .11]], null,
+           { emit: on ? (k === 2 ? C.eth : C.di) : '#141a22', stroke: null, bias: .05 }); } }
+  text3('IGNITION · SQL', [-1.75, 3.96, 2.18], .085, '#cfd8e3', { weight: 700 });
+}
+function sqlHit(tw) { return PK.some(k => (k.link === 'jet_sql' || k.link === 'plc_sql') && tw > k.t1 - .05 && tw < k.t1 + .6); }
+function bin(x0, y0, x1, y1, tint, label, col) {
+  const wall = [tint[0] * .45 + 30, tint[1] * .45 + 30, tint[2] * .45 + 30], z1 = .78, th = .05;
+  box(x0, y0, 0, x1, y1, .05, [40, 46, 54]);
+  box(x0, y0, 0, x1, y0 + th, z1, wall, { bias: -.3 }); box(x0, y1 - th, 0, x1, y1, z1, wall);
+  box(x0, y0 + th, 0, x0 + th, y1 - th, z1, wall); box(x1 - th, y0 + th, 0, x1, y1 - th, z1, wall);
+  poly([[x0 + th, y0 + th, .051], [x1 - th, y0 + th, .051], [x1 - th, y1 - th, .051], [x0 + th, y1 - th, .051]], [tint[0] * .25 + 20, tint[1] * .25 + 20, tint[2] * .25 + 20]);
+  text3(label, [(x0 + x1) / 2, y0 + .05, .9], .1, col, { weight: 800 });
+}
+function finAngle(tw) { let a = 0; for (const f of FIN) { if (tw < f.t0) break; a = lerp(f.a0, f.a1, ease(seg(tw, f.t0, f.t1))); } return a; }
+
+// ---------------------------------------------------------------- parts
+function partPose(q, tw) {
+  if (tw < q.tLeave || q.tLeave === undefined) return { x: q.x0 + S(tw), y: 0, z: ZB, yaw: 0, pitch: 0, onBelt: true };
+  const tau = tw - q.tLeave, yb = BIN_Y[q.cls], T1 = 1.05, T2 = DIS_T - T1;
+  if (tau < T1) { const u = tau / T1, uu = u * u * .55 + u * .45;
+    const x = lerp(X_HEAD, 5.95, uu);
+    const z = x < 4.32 ? lerp(ZB, zc(4.32), (x - X_HEAD) / .12) : zc(x);
+    const y = slideY(x, yb), yaw = clamp(Math.atan((slideY(x + .01, yb) - slideY(x - .01, yb)) / .02), -.55, .55);
+    return { x, y, z, yaw, pitch: .12, onBelt: false }; }
+  const u = clamp((tau - T1) / T2);
+  return { x: lerp(5.95, 6.75, u), y: lerp(slideY(5.95, yb), yb, smooth(u)), z: lerp(zc(5.95), .06, u * u) + .18 * Math.sin(Math.PI * u) * (1 - u),
+           yaw: 0, pitch: .12 + u * .5 * (1 - u) * 2, onBelt: false };
+}
+// Lateral path on the chute: centred until the fin face reaches it, then it rides the fin (0.16 off its
+// centreline) to the pivot, then eases into the open branch. The fin sits on the opposite side of yb.
+const NOSE = .42;                                          // steer by the leading tip, not the centre
+function slideY(x, yb) {
+  const sg = Math.sign(yb), xTip = PIV - FIN_L * Math.cos(FIN_A), GAP = .23, xf = x + NOSE;
+  if (xf <= PIV) { const fy = .56 * clamp((PIV - xf) / (PIV - xTip)); return sg * Math.max(0, GAP - fy); }
+  return sg * lerp(GAP, .46, smooth((xf - PIV) / (6.4 - PIV)));
+}
+function drawPart(q, tw) {
+  const ps = partPose(q, tw);
+  if (!ps.onBelt || ps.x > X_TAIL - .5) {
+    const place = xform([ps.x, ps.y, ps.z], ps.yaw, ps.pitch);
+    const o = { bias: .45 };
+    if (q.cls === 'bolt') {
+      const T = v => place(xform([0, 0, .13], 0, Math.PI / 2)(v)), metal = [150, 163, 180], thr = [104, 115, 130];
+      cyl(6, .13, .13, -.47, -.37, T, metal, o);
+      cyl(12, .06, .06, -.37, .42, T, metal, o);
+      for (let k = 0; k < 9; k++) { const z = .02 + k * .045; cyl(12, .068, .068, z, z + .016, T, thr, o); }
+    } else {
+      const T = v => place(xform([0, 0, .12], 0, Math.PI / 2)(v)), metal = [212, 176, 100], thr = [160, 128, 70];
+      cyl(16, .12, .12, -.44, -.38, T, metal, o);
+      cyl(16, .12, .075, -.47, -.44, T, metal, o);
+      cyl(12, .05, .047, -.38, .22, T, metal, o);
+      cyl(12, .047, .004, .22, .40, T, metal, o);
+      for (let k = 0; k < 12; k++) { const z = -.33 + k * .055, rr = (z < .22 ? .049 : lerp(.047, .004, (z - .22) / .18)) + .014;
+        if (z < .37) cyl(12, rr, rr, z, z + .014, T, thr, o); }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- cables + packets
+function drawCables(tw) {
+  for (const [id, L] of Object.entries(LINKS)) {
+    const active = PK.some(k => k.link === id && tw > k.t0 - .3 && tw < k.t1 + .4);
+    const sumA = win(tw, M.summary, M.endCard + 3, .8, 1.2);
+    const col = TYPE_COL[L.type];
+    for (let i = 1; i < L.pts.length; i++) {
+      line3(L.pts[i - 1], L.pts[i], '#1a212b', 3.2, { bias: -.02 });
+      line3(L.pts[i - 1], L.pts[i], rgba(col, Math.max(.22, active ? .85 : 0, sumA * .6)), 1.6, { bias: -.03 });
+    }
+  }
+}
+function drawPackets(tw) {
+  g.save(); g.globalCompositeOperation = 'lighter';
+  const labels = [];
+  for (const k of PK) {
+    if (tw < k.t0 || tw > k.t1 + .35) continue;
+    const L = LINKS[k.link], col = TYPE_COL[L.type], u = ease(seg(tw, k.t0, k.t1)), fade = 1 - seg(tw, k.t1, k.t1 + .35);
+    for (let j = 14; j >= 0; j--) { const uj = u - j * .011; if (uj < 0) continue;
+      const q = P(along(L, uj)); if (q[2] < .2) continue;
+      const rr = (j === 0 ? 7 : 5 - j * .25) * clamp(14 / q[2], .55, 1.6);
+      g.fillStyle = rgba(col, (j === 0 ? .95 : .5 * (1 - j / 15)) * fade);
+      g.beginPath(); g.arc(q[0], q[1], Math.max(1, rr), 0, Math.PI * 2); g.fill(); }
+    const q = P(along(L, u)); if (q[2] < .2) continue;
+    const R = 34 * clamp(14 / q[2], .6, 1.5), gr = g.createRadialGradient(q[0], q[1], 0, q[0], q[1], R);
+    gr.addColorStop(0, rgba(col, .55 * fade)); gr.addColorStop(1, rgba(col, 0));
+    g.fillStyle = gr; g.fillRect(q[0] - R, q[1] - R, 2 * R, 2 * R);
+    if (tw < k.t1 + .2) labels.push({ x: q[0], y: q[1], text: k.label, col, a: fade * seg(tw, k.t0, k.t0 + .15) });
+  }
+  g.restore();
+  const placed = [];
+  g.font = `600 19px ${MONO}`;
+  for (const lb of labels) { let x = lb.x + 16, y = lb.y - 22; const w = g.measureText(lb.text).width + 24;
+    for (let k = 0; k < 6 && placed.some(p => x < p.x + p.w && x + w > p.x && Math.abs(y - p.y) < 36); k++) y += 38;
+    placed.push({ x, y, w }); chip(x, y, lb.text, lb.col, lb.a, lb.text.length < 3); }
+}
+function chip(x, y, text, col, a = 1, badge = false) {
+  g.save(); g.globalAlpha = a; g.font = `600 ${badge ? 22 : 19}px ${MONO}`;
+  const w = g.measureText(text).width + (badge ? 22 : 24), h = badge ? 34 : 32;
+  if (badge) { g.fillStyle = col; g.beginPath(); g.arc(x + h / 2 - 6, y, h / 2, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#05070a'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, x + h / 2 - 6, y + 1); g.restore(); return; }
+  roundRect(x, y - h / 2, w, h, 7); g.fillStyle = 'rgba(6,9,14,.88)'; g.fill(); g.strokeStyle = rgba(col, .9); g.lineWidth = 1.5; g.stroke();
+  g.fillStyle = col; g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillText(text, x + 12, y + 1); g.restore();
+}
+function roundRect(x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+
+// ---------------------------------------------------------------- flush 3D list
+function flush() {
+  items.sort((a, b) => b.d - a.d);
+  for (const it of items) {
+    if (it.k === 0) { g.beginPath(); const p = it.pr; g.moveTo(p[0][0], p[0][1]); for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]); g.closePath();
+      g.globalAlpha = it.a; g.fillStyle = it.fill; g.fill(); if (it.stroke) { g.strokeStyle = it.stroke; g.lineWidth = 1; g.stroke(); } g.globalAlpha = 1; }
+    else { g.beginPath(); g.moveTo(it.pa[0], it.pa[1]); g.lineTo(it.pb[0], it.pb[1]); g.strokeStyle = it.col; g.lineWidth = it.w; g.lineCap = 'round';
+      if (it.dash) g.setLineDash(it.dash); g.stroke(); g.setLineDash([]); }
+  }
+  g.save(); g.globalCompositeOperation = 'lighter';
+  for (const gl of glows) { const gr = g.createRadialGradient(gl.x, gl.y, 0, gl.x, gl.y, gl.r);
+    gr.addColorStop(0, rgba(gl.col, .9 * gl.a)); gr.addColorStop(.35, rgba(gl.col, .35 * gl.a)); gr.addColorStop(1, rgba(gl.col, 0));
+    g.fillStyle = gr; g.fillRect(gl.x - gl.r, gl.y - gl.r, gl.r * 2, gl.r * 2); }
+  g.restore();
+  for (const tx of texts) { if (tx.px < 5) continue; g.globalAlpha = tx.a; g.font = `${tx.weight} ${tx.px}px ${tx.mono ? MONO : FONT}`;
+    g.fillStyle = tx.col; g.textAlign = tx.align; g.textBaseline = 'middle'; g.fillText(tx.str, tx.x, tx.y); g.globalAlpha = 1; }
+}
+
+// ---------------------------------------------------------------- callouts
+const CALLOUTS = [
+  { text: 'HMI', at: [-2.6, 2.25, 1.9], off: [-30, -70], win: () => [[M.hmi - .8, M.beltStart + .6], [M.summary + .9, M.summary + 1.9]] },
+  { text: 'PLC · CPU + I/O', at: [2.9, 2.8, 2.66], off: [-40, -80], win: () => [[M.hmi - .8, M.beltStart + .8], [M.feed1.t1 + .3, M.eth1 + .8], [M.summary + .9, M.endCard]] },
+  { text: 'Motor drive · VFD', at: [3.9, 2.8, 1.2], off: [-150, 90], win: () => [[M.run1 - .2, M.beltStart + .8], [M.summary + 1.6, M.summary + 3.4]] },
+  { text: 'Motor', at: [4.15, -1.6, 1.32], off: [70, 60], win: () => [[M.run1 + .5, M.beltStart + 1.4], [M.summary + 2.4, M.summary + 3.6]] },
+  { text: 'Photo-eye · DI 0', at: [xB, -1.02, 1.42], off: [60, 110], win: () => [[M.trip1 - 1.6, M.stop1 + .5], [M.summary + 3.2, M.summary + 4.4]] },
+  { text: 'Camera', at: [1.4, -.13, 2.9], off: [-110, -60], win: () => [[M.trip1 - 1.6, M.feed1.t0 + .2], [M.summary + 4.0, M.summary + 5.2]] },
+  { text: 'Jetson Nano', at: [.4, 1.75, 1.06], off: [-130, -40], win: () => [[M.flash1 - .2, M.feed1.t0 + .2], [M.feed1.t1 + .2, M.eth1 + .6], [M.summary + 4.0, M.summary + 6.2]] },
+  { text: 'Diverter fin', at: [4.95, .3, 1.32], off: [60, -100], win: () => [[M.divCmd1 - .3, M.inpos1 + .6], [M.summary + 5.8, M.summary + 7.8]] },
+  { text: 'Ignition + SQL', at: [-1.75, 4.0, 2.1], off: [-60, -50], win: () => [[M.feed1.t1 + .4, M.eth1 + 1.0], [M.summary + 7.5, M.endCard]] },
+];
+function drawCallouts(tw) {
+  for (const c of CALLOUTS) {
+    const a = Math.max(0, ...c.win().map(w => win(tw, w[0], w[1], .35, .35))); if (a <= .01) continue;
+    const q = P(c.at); if (q[2] < .2) continue;
+    const x = q[0] + c.off[0], y = q[1] + c.off[1];
+    g.save(); g.globalAlpha = a;
+    g.strokeStyle = 'rgba(232,237,242,.55)'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(x, y); g.stroke();
+    g.fillStyle = '#e8edf2'; g.beginPath(); g.arc(q[0], q[1], 3.5, 0, Math.PI * 2); g.fill();
+    g.font = `600 22px ${FONT}`; const w = g.measureText(c.text).width + 26;
+    const bx = c.off[0] < 0 ? x - w : x;
+    roundRect(bx, y - 19, w, 38, 8); g.fillStyle = 'rgba(8,11,16,.86)'; g.fill(); g.strokeStyle = 'rgba(255,255,255,.18)'; g.lineWidth = 1; g.stroke();
+    g.fillStyle = '#e8edf2'; g.textBaseline = 'middle'; g.fillText(c.text, bx + 13, y + 1); g.restore();
+  }
+}
+
+// ---------------------------------------------------------------- spacing dimension (scene 02)
+function drawSpacing(tw) {
+  const a = win(tw, M.beltStart + ACC * .5, M.trip1 - .2, .5, .5); if (a <= 0) return;
+  const xa = bolt.x0 + S(tw), xs = screw.x0 + S(tw), y = -1.12, z = 1.42;
+  const pa = P([xs, y, z]), pb = P([xa, y, z]);
+  g.save(); g.globalAlpha = a; g.strokeStyle = '#e8edf2'; g.lineWidth = 1.5; g.setLineDash([6, 6]);
+  g.beginPath(); g.moveTo(pa[0], pa[1]); g.lineTo(pb[0], pb[1]); g.stroke(); g.setLineDash([]);
+  for (const p of [pa, pb]) { g.beginPath(); g.moveTo(p[0], p[1] - 12); g.lineTo(p[0], p[1] + 12); g.stroke(); }
+  chip((pa[0] + pb[0]) / 2 - 150, (pa[1] + pb[1]) / 2 - 44, 'even pitch · 1 part per cycle', '#e8edf2', 1);
+  g.restore();
+}
+
+// ---------------------------------------------------------------- camera feed (Jetson view)
+const noiseC = document.createElement('canvas'); noiseC.width = noiseC.height = 256;
+{ const nx = noiseC.getContext('2d'), id = nx.createImageData(256, 256), R = rng(7);
+  for (let i = 0; i < id.data.length; i += 4) { const v = R() * 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 18; } nx.putImageData(id, 0, 0); }
+function drawFeed(tw, F) {
+  const k = F.k, a = win(tw, F.t0, F.t1, .4 * k, .45 * k); if (a <= 0) return;
+  const lt = (tw - F.t0) / k;                                    // feed-local time at cycle-1 pace
+  g.fillStyle = `rgba(0,0,0,${.74 * a})`; g.fillRect(0, 0, W, H);
+  const X = 90, Y = 170, w = 1120, h = 630, sc = w / 3.2, q = F.part, cls = q.cls, col = C[cls];
+  const wx = x => X + w / 2 + (x - XC) * sc, wy = y => Y + h / 2 + y * sc;
+  g.save(); g.globalAlpha = a;
+  const zoom = 1 + .04 * smooth((lt) / 6);
+  g.save(); roundRect(X, Y, w, h, 14); g.clip();
+  g.translate(X + w / 2, Y + h / 2); g.scale(zoom, zoom); g.translate(-(X + w / 2), -(Y + h / 2));
+  g.fillStyle = '#0b0c0e'; g.fillRect(X, Y, w, h);
+  g.fillStyle = '#17191d'; g.fillRect(X, wy(-BW), w, BW * 2 * sc);
+  const len = X_HEAD - X_TAIL, s = S(tw);
+  g.fillStyle = '#23262c';
+  for (let j = 0; j < 25; j++) { const x = X_TAIL + ((j * .45 + s) % len + len) % len; const px = wx(x); if (px > X - 20 && px < X + w + 20) g.fillRect(px, wy(-BW), .03 * sc, BW * 2 * sc); }
+  for (const yy of [-.86, .78]) { const gr = g.createLinearGradient(0, wy(yy), 0, wy(yy + .08)); gr.addColorStop(0, '#5a6270'); gr.addColorStop(1, '#8b95a3'); g.fillStyle = gr; g.fillRect(X, wy(yy), w, .08 * sc); }
+  const ps = partPose(q, tw), cx = wx(ps.x), cy = wy(ps.y);
+  topView(cls, cx, cy, sc);
+  const hot = g.createRadialGradient(X + w / 2, Y + h / 2, 30, X + w / 2, Y + h / 2, w * .62);
+  hot.addColorStop(0, 'rgba(210,235,255,.10)'); hot.addColorStop(.6, 'rgba(0,0,0,0)'); hot.addColorStop(1, 'rgba(0,0,0,.65)');
+  g.fillStyle = hot; g.fillRect(X, Y, w, h);
+  const fr = Math.floor(tw * 30); g.globalAlpha = a * .9;
+  for (let yy = Y - 256; yy < Y + h; yy += 256) for (let xx = X - 256; xx < X + w; xx += 256) g.drawImage(noiseC, xx + (fr * 37) % 256, yy + (fr * 91) % 256);
+  g.globalAlpha = a; g.fillStyle = 'rgba(0,0,0,.14)'; for (let yy = Y; yy < Y + h; yy += 3) g.fillRect(X, yy, w, 1);
+  // scan sweep
+  if (lt > .4 && lt < 1.5) { const u = seg(lt, .4, 1.5), sy = Y + u * h, gr = g.createLinearGradient(0, sy - 90, 0, sy);
+    gr.addColorStop(0, 'rgba(95,216,255,0)'); gr.addColorStop(1, 'rgba(95,216,255,.22)'); g.fillStyle = gr; g.fillRect(X, sy - 90, w, 90);
+    g.fillStyle = 'rgba(160,235,255,.85)'; g.fillRect(X, sy, w, 2); }
+  // bounding box
+  const bx0 = wx(ps.x - .5) - 14, bx1 = wx(ps.x + (cls === 'bolt' ? .44 : .42)) + 14, by0 = wy(-.15) - 16, by1 = wy(.15) + 16;
+  if (lt > 1.4) { const u = ease(seg(lt, 1.4, 2.2)), per = 2 * (bx1 - bx0 + by1 - by0);
+    g.strokeStyle = col; g.lineWidth = 3; g.setLineDash([u * per, per]); g.strokeRect(bx0, by0, bx1 - bx0, by1 - by0); g.setLineDash([]);
+    if (u >= 1) { g.lineWidth = 6; const cl = 26;
+      [[bx0, by0, 1, 1], [bx1, by0, -1, 1], [bx0, by1, 1, -1], [bx1, by1, -1, -1]].forEach(([x, y, sx, sy]) => { g.beginPath(); g.moveTo(x + sx * cl, y); g.lineTo(x, y); g.lineTo(x, y + sy * cl); g.stroke(); });
+      g.fillStyle = rgba(col, .07); g.fillRect(bx0, by0, bx1 - bx0, by1 - by0); } }
+  if (lt > 2.2) { const u = ease(seg(lt, 2.2, 2.5)); g.globalAlpha = a * u; g.font = `700 30px ${MONO}`;
+    const txt = `${cls}  ${q.conf.toFixed(2)}`, tw2 = g.measureText(txt).width + 28;
+    g.fillStyle = col; g.fillRect(bx0 - 1.5, by0 - 46, tw2, 46); g.fillStyle = '#05070a'; g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillText(txt, bx0 + 12, by0 - 22); g.globalAlpha = a; }
+  g.restore();
+  // feed chrome
+  g.font = `600 20px ${MONO}`; g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillStyle = 'rgba(232,237,242,.85)';
+  g.fillText('CAM 0  ·  1280×720  ·  30 fps', X + 22, Y + 30);
+  g.fillText(`frame ${String(fr + 4200).padStart(6, '0')}`, X + 22, Y + h - 28);
+  g.textAlign = 'right'; g.fillText('overhead · ring light', X + w - 22, Y + h - 28);
+  g.fillStyle = Math.floor(tw * 2) % 2 ? C.red : 'rgba(255,77,94,.35)'; g.beginPath(); g.arc(X + w - 108, Y + 30, 8, 0, Math.PI * 2); g.fill();
+  g.fillStyle = 'rgba(232,237,242,.85)'; g.fillText('LIVE', X + w - 22, Y + 30);
+  roundRect(X, Y, w, h, 14); g.strokeStyle = 'rgba(95,216,255,.45)'; g.lineWidth = 2; g.stroke();
+  // mapping card
+  if (lt > 2.8) { const u = ease(seg(lt, 2.8, 3.4)); g.globalAlpha = a * u;
+    const mx = X + w / 2 - 300, my = Y + h + 26; roundRect(mx, my, 600, 84, 12); g.fillStyle = 'rgba(10,14,20,.92)'; g.fill(); g.strokeStyle = rgba(col, .7); g.lineWidth = 2; g.stroke();
+    g.textAlign = 'left'; g.font = `500 24px ${MONO}`; g.fillStyle = C.dim; g.fillText('class', mx + 28, my + 43);
+    g.fillStyle = col; g.font = `700 30px ${MONO}`; g.fillText(`"${cls}"`, mx + 118, my + 43);
+    g.fillStyle = C.text; g.font = `500 28px ${FONT}`; g.fillText('→', mx + 282, my + 42);
+    g.font = `500 24px ${MONO}`; g.fillStyle = C.dim; g.fillText('Vision_Class =', mx + 330, my + 43);
+    g.fillStyle = col; g.font = `800 40px ${MONO}`; g.fillText(cls === 'bolt' ? '1' : '2', mx + 548, my + 43); g.globalAlpha = a; }
+  // pipeline checklist
+  const PX = 1260, PY = 170, PW = 570;
+  roundRect(PX, PY, PW, 630, 14); g.fillStyle = 'rgba(10,14,20,.9)'; g.fill(); g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 1; g.stroke();
+  g.textAlign = 'left'; g.fillStyle = C.text; g.font = `700 26px ${FONT}`; g.fillText('Jetson Nano · vision pipeline', PX + 30, PY + 46);
+  g.fillStyle = C.dim; g.font = `500 18px ${FONT}`; g.fillText('one frame, one decision', PX + 30, PY + 78);
+  const steps = [['Capture frame', 'CSI camera', 0, .4, '4 ms'], ['Pre-process', 'resize · normalize', .4, .9, '3 ms'], ['Run trained model', 'object detector', .9, 2.2, '31 ms'],
+    ['Best detection', `${cls} · ${q.conf.toFixed(2)}`, 2.2, 2.6, '1 ms'], ['Map label → integer', `${cls} = ${cls === 'bolt' ? 1 : 2}`, 2.8, 3.4, '<1 ms'], ['Write PLC tag', 'Ethernet → Vision_Class', 3.6, 99, '']];
+  steps.forEach(([n, d, s0, s1, ms], i) => {
+    const y = PY + 128 + i * 78, done = lt >= s1, act = lt >= s0 && !done;
+    g.globalAlpha = a * (lt >= s0 ? 1 : .35);
+    g.strokeStyle = done ? C.di : act ? C.video : 'rgba(255,255,255,.3)'; g.lineWidth = 2.5; g.beginPath(); g.arc(PX + 44, y + 16, 15, 0, Math.PI * 2); g.stroke();
+    if (done) { g.beginPath(); g.moveTo(PX + 37, y + 16); g.lineTo(PX + 42, y + 22); g.lineTo(PX + 52, y + 10); g.stroke(); }
+    else if (act) { g.beginPath(); g.arc(PX + 44, y + 16, 15, tw * 8, tw * 8 + 1.8); g.strokeStyle = '#fff'; g.stroke(); }
+    g.fillStyle = C.text; g.font = `600 22px ${FONT}`; g.fillText(n, PX + 76, y + 8);
+    g.fillStyle = C.dim; g.font = `500 18px ${MONO}`; g.fillText(d, PX + 76, y + 36);
+    if (done && ms) { g.textAlign = 'right'; g.fillStyle = C.dim; g.fillText(ms, PX + PW - 30, y + 8); g.textAlign = 'left'; }
+  });
+  g.globalAlpha = a; g.fillStyle = C.faint; g.font = `500 16px ${FONT}`; g.fillText('timings are illustrative', PX + 30, PY + 606);
+  g.restore();
+}
+function topView(cls, cx, cy, sc) {
+  const X = x => cx + x * sc, Y = y => cy + y * sc;
+  g.save();
+  g.fillStyle = 'rgba(0,0,0,.55)'; g.beginPath(); g.ellipse(cx + 8, cy + 14, .5 * sc, .14 * sc, 0, 0, Math.PI * 2); g.fill();
+  const cylFill = (x0, x1, r, c0, c1) => { const gr = g.createLinearGradient(0, Y(-r), 0, Y(r)); gr.addColorStop(0, c1); gr.addColorStop(.35, c0); gr.addColorStop(1, '#1b1f25'); g.fillStyle = gr; g.fillRect(X(x0), Y(-r), (x1 - x0) * sc, 2 * r * sc); };
+  if (cls === 'bolt') {
+    cylFill(-.37, .42, .06, '#aab8c8', '#e6eef7');
+    g.strokeStyle = 'rgba(40,48,58,.9)'; g.lineWidth = 2;
+    for (let x = .02; x < .42; x += .045) { g.beginPath(); g.moveTo(X(x), Y(-.06)); g.lineTo(X(x + .025), Y(.06)); g.stroke(); }
+    const bands = [[-.13, -.065, '#8d9aab'], [-.065, .065, '#c6d1de'], [.065, .13, '#6f7b8a']];
+    for (const [y0, y1, c] of bands) { g.fillStyle = c; g.fillRect(X(-.47), Y(y0), .1 * sc, (y1 - y0) * sc); }
+    g.strokeStyle = 'rgba(20,24,30,.8)'; g.strokeRect(X(-.47), Y(-.13), .1 * sc, .26 * sc);
+  } else {
+    g.beginPath(); g.moveTo(X(-.38), Y(-.05)); g.lineTo(X(.22), Y(-.047)); g.lineTo(X(.40), Y(0)); g.lineTo(X(.22), Y(.047)); g.lineTo(X(-.38), Y(.05)); g.closePath();
+    const gr = g.createLinearGradient(0, Y(-.05), 0, Y(.05)); gr.addColorStop(0, '#fff0c8'); gr.addColorStop(.35, '#d6b06a'); gr.addColorStop(1, '#3a2c14'); g.fillStyle = gr; g.fill();
+    g.strokeStyle = 'rgba(70,50,20,.9)'; g.lineWidth = 2;
+    for (let x = -.33; x < .37; x += .055) { const r = x < .22 ? .05 : lerp(.047, .004, (x - .22) / .18); g.beginPath(); g.moveTo(X(x), Y(-r)); g.lineTo(X(x + .03), Y(r)); g.stroke(); }
+    const hg = g.createLinearGradient(X(-.47), 0, X(-.38), 0); hg.addColorStop(0, '#6b5125'); hg.addColorStop(.5, '#f2d48f'); hg.addColorStop(1, '#b8913f');
+    g.fillStyle = hg; roundRect(X(-.47), Y(-.12), .09 * sc, .24 * sc, 10); g.fill();
+  }
+  g.restore();
+}
+
+// ---------------------------------------------------------------- HUD panels
+const STEPS = [
+  [() => M.hmi - .7, () => M.beltStart + ACC, '01', 'Operator starts the line', 'HMI START → PLC → motor drive → belt'],
+  [() => M.beltStart + ACC, () => M.trip1 - .1, '02', 'Parts arrive, evenly spaced', 'A bolt and a screw ride the belt one pitch apart'],
+  [() => M.trip1 - .1, () => M.stop1 + .3, '03', 'Photo-eye trips · PLC stops the belt', 'DI 0 PartPresent → Conveyor_Run = 0'],
+  [() => M.stop1 + .3, () => M.feed1.t1 + .15, '04', 'Camera captures · Jetson classifies', 'The trained model boxes the part and names it'],
+  [() => M.feed1.t1 + .15, () => M.divCmd1, '05', 'The answer becomes a PLC tag', 'bolt → Vision_Class = 1 over Ethernet · detection logged to SQL'],
+  [() => M.divCmd1, () => M.restart1 + .2, '06', 'PLC fires the diverter', 'Div_Cmd = 1 → fin swings to Bin 1 → Div_InPos confirms'],
+  [() => M.restart1 + .2, () => M.trip2 - .1, '07', 'Belt restarts · bolt drops into Bin 1', 'The screw is already one pitch behind'],
+  [() => M.trip2 - .1, () => M.summary, '08', 'Same cycle for the screw', 'screw → Vision_Class = 2 → fin swings to Bin 2'],
+  [() => M.summary, () => M.endCard, '09', 'One cycle, every signal', 'Discrete I/O, analog speed, Ethernet data and logging'],
+];
+function drawTitle(tw) {
+  for (const [a0, a1, n, title, subt] of STEPS) {
+    const a = win(tw, a0(), a1(), .45, .35); if (a <= 0) continue;
+    const dy = (1 - smooth(seg(tw, a0(), a0() + .45))) * 14;
+    g.save(); g.globalAlpha = a; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    g.fillStyle = C.bolt; g.font = `700 26px ${MONO}`; g.fillText(n, 72, 92 + dy);
+    g.fillStyle = 'rgba(61,214,245,.5)'; g.fillRect(116, 83 + dy, 36, 2);
+    g.fillStyle = C.text; g.font = `700 46px ${FONT}`; g.fillText(title, 168, 98 + dy);
+    g.fillStyle = C.dim; g.font = `500 24px ${FONT}`; g.fillText(subt, 168, 138 + dy);
+    g.restore();
+  }
+  const sm = WARPS.map(w => win(tw, w.t0, w.t1, .03, .03)).reduce((a, b) => Math.max(a, b), 0);
+  if (sm > 0) { g.save(); g.globalAlpha = sm; chip(168, 178, 'SLOW MOTION  — a real PLC scan takes about 10 ms', '#ffb020', 1); g.restore(); }
+}
+function drawTags(tw) {
+  const inFeed = Math.max(win(tw, M.feed1.t0, M.feed1.t1, .4, .45), win(tw, M.feed2.t0, M.feed2.t1, .3, .35));
+  const a = win(tw, M.hmi - .6, M.endCard + .2, .6, .5) * (1 - inFeed); if (a <= 0) return;
+  const X = 1452, Y = 56, Wd = 420, RH = 35;
+  g.save(); g.globalAlpha = a;
+  roundRect(X, Y, Wd, 96 + TAGS.length * RH + 56, 14); g.fillStyle = C.panel; g.fill(); g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 1; g.stroke();
+  g.textAlign = 'left'; g.textBaseline = 'middle';
+  g.fillStyle = C.text; g.font = `700 24px ${FONT}`; g.fillText('PLC tags', X + 24, Y + 36);
+  g.fillStyle = C.di; g.beginPath(); g.arc(X + Wd - 90, Y + 36, 6, 0, Math.PI * 2); g.fill();
+  g.fillStyle = C.dim; g.font = `500 17px ${MONO}`; g.fillText('RUN', X + Wd - 76, Y + 37);
+  g.fillStyle = C.faint; g.font = `600 15px ${MONO}`; g.fillText('TAG', X + 22, Y + 76); g.fillText('I/O', X + 212, Y + 76); g.textAlign = 'right'; g.fillText('VALUE', X + Wd - 24, Y + 76); g.textAlign = 'left';
+  TAGS.forEach(([name, type, io, fmt], i) => {
+    const y = Y + 96 + i * RH + RH / 2, { v, at } = tag(name, tw), fresh = 1 - seg(tw, at, at + 1.3);
+    if (fresh > 0 && at > 0) { g.fillStyle = `rgba(61,214,245,${.2 * fresh})`; g.fillRect(X + 8, y - RH / 2 + 3, Wd - 16, RH - 6); g.fillStyle = `rgba(61,214,245,${fresh})`; g.fillRect(X + 8, y - RH / 2 + 3, 3, RH - 6); }
+    g.fillStyle = C.text; g.font = `500 17px ${MONO}`; g.fillText(name, X + 22, y);
+    g.fillStyle = C.dim; g.font = `500 14px ${MONO}`; g.fillText(io, X + 212, y);
+    const txt = fmt ? fmt(v) : String(v);
+    const vc = name === 'Vision_Class' && v ? C[v === 1 ? 'bolt' : 'screw'] : (type === 'BOOL' && v) ? C.di : C.text;
+    g.textAlign = 'right'; g.fillStyle = vc; g.font = `700 17px ${MONO}`; g.fillText(txt, X + Wd - 22, y); g.textAlign = 'left';
+  });
+  const fy = Y + 96 + TAGS.length * RH + 30;
+  g.fillStyle = C.dim; g.font = `500 16px ${MONO}`; g.fillText('Vision_Class:', X + 24, fy);
+  g.fillStyle = C.bolt; g.fillText('1 = bolt', X + 160, fy); g.fillStyle = C.screw; g.fillText('2 = screw', X + 262, fy);
+  g.restore();
+}
+function drawRecap(tw) {
+  const a = win(tw, M.summary + .4, M.endCard + .3, .6, .5); if (a <= 0) return;
+  const X = 60, Y = 250, RH = 50;
+  g.save(); g.globalAlpha = a;
+  roundRect(X, Y, 560, 70 + RECAP.length * RH + 10, 14); g.fillStyle = C.panel; g.fill(); g.strokeStyle = 'rgba(255,255,255,.12)'; g.stroke();
+  g.fillStyle = C.text; g.font = `700 22px ${FONT}`; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('Data path, in order', X + 24, Y + 36);
+  RECAP.forEach(([id, n, d], i) => { const t0 = M.summary + .9 + i * .85, on = seg(tw, t0, t0 + .3), col = TYPE_COL[LINKS[id].type], y = Y + 76 + i * RH + 10;
+    g.globalAlpha = a * (.35 + .65 * on);
+    g.fillStyle = col; g.beginPath(); g.arc(X + 40, y, 15, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#05070a'; g.font = `700 17px ${MONO}`; g.textAlign = 'center'; g.fillText(String(i + 1), X + 40, y + 1);
+    g.textAlign = 'left'; g.fillStyle = C.text; g.font = `600 20px ${FONT}`; g.fillText(n, X + 70, y - 1);
+    g.fillStyle = C.dim; g.font = `500 16px ${MONO}`; g.fillText(d, X + 290, y); });
+  g.restore();
+}
+function drawLegend(tw) {
+  const a = win(tw, M.hmi - .4, M.end, .6, .8) * (1 - Math.max(win(tw, M.feed1.t0, M.feed1.t1, .4, .45), win(tw, M.feed2.t0, M.feed2.t1, .3, .35))); if (a <= 0) return;
+  const items2 = [['Ethernet data', C.eth], ['24 V discrete I/O', C.di], ['0–10 V analog', C.ao], ['Camera video', C.video], ['Motor power', C.pwr]];
+  g.save(); g.globalAlpha = a * .95; g.font = `500 18px ${FONT}`; g.textBaseline = 'middle'; g.textAlign = 'left';
+  let x = 72; const y = 1030;
+  for (const [n, c] of items2) { g.fillStyle = c; g.fillRect(x, y - 2, 26, 4); g.beginPath(); g.arc(x + 13, y, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = C.dim; g.fillText(n, x + 36, y); x += g.measureText(n).width + 76; }
+  g.restore();
+}
+function drawCounts(tw) {
+  const a = win(tw, bolt.tLand - .3, M.endCard + .2, .4, .5) * (1 - Math.max(win(tw, M.feed2.t0, M.feed2.t1, .3, .35), 0)); if (a <= 0) return;
+  const X = 1452, Y = 590, cb = tag('Cnt_Bolt', tw), cs = tag('Cnt_Screw', tw);
+  g.save(); g.globalAlpha = a;
+  roundRect(X, Y, 420, 150, 14); g.fillStyle = C.panel; g.fill(); g.strokeStyle = 'rgba(255,255,255,.12)'; g.stroke();
+  g.fillStyle = C.text; g.font = `700 22px ${FONT}`; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('Ignition · live counts', X + 24, Y + 34);
+  [[cb, 'BOLTS', C.bolt, X + 24], [cs, 'SCREWS', C.screw, X + 224]].forEach(([c, n, col, x]) => { const f = 1 - seg(tw, c.at, c.at + .8);
+    g.fillStyle = col; g.font = `800 ${56 + 10 * (c.at > 0 ? f : 0)}px ${MONO}`; g.fillText(String(c.v), x, Y + 96);
+    g.fillStyle = C.dim; g.font = `600 17px ${FONT}`; g.fillText(n, x + 56, Y + 100); });
+  g.restore();
+}
+function drawTitleCard(tw) {
+  const a = 1 - seg(tw, 4.2, 5.0); if (a <= 0) return;
+  g.save(); g.fillStyle = `rgba(0,0,0,${.86 * a})`; g.fillRect(0, 0, W, H); g.globalAlpha = a * seg(tw, .3, 1.3);
+  g.globalAlpha = a; const yb = drawLogo(W / 2, 110, 17, seg(tw, .2, 2.2));
+  g.globalAlpha = a * seg(tw, 2.0, 2.8); g.textAlign = 'center'; g.fillStyle = C.text; g.font = `500 34px ${FONT}`;
+  g.fillText('How one part gets sorted', W / 2, yb + 60);
+  g.globalAlpha = a * seg(tw, 2.4, 3.2); g.fillStyle = C.dim; g.font = `500 22px ${MONO}`; g.fillText('PLC  ·  camera  ·  Jetson Nano  ·  diverter  ·  data flow', W / 2, yb + 106);
+  g.restore();
+}
+function drawEndCard(tw) {
+  const a = seg(tw, M.endCard, M.endCard + 1.2); if (a <= 0) return;
+  g.save(); g.fillStyle = `rgba(0,0,0,${.88 * a})`; g.fillRect(0, 0, W, H); g.globalAlpha = a;
+  const yb = drawLogo(W / 2, 96, 16, seg(tw, M.endCard + .2, M.endCard + 1.6));
+  g.textAlign = 'center'; g.fillStyle = C.text; g.font = `500 30px ${FONT}`; g.fillText('sense  →  see  →  decide  →  sort', W / 2, yb + 56);
+  g.fillStyle = C.dim; g.font = `500 20px ${FONT}`; g.fillText('ICET 4751 capstone · concept animation · hardware, protocol and timings are illustrative', W / 2, yb + 100);
+  g.restore();
+}
+function drawChrome(tv) {
+  g.fillStyle = 'rgba(255,255,255,.08)'; g.fillRect(0, H - 4, W, 4);
+  g.fillStyle = C.bolt; g.fillRect(0, H - 4, W * tv / DURATION, 4);
+  g.font = `500 17px ${MONO}`; g.textAlign = 'right'; g.textBaseline = 'middle'; g.fillStyle = 'rgba(232,237,242,.45)';
+  g.fillText(`${fmt(tv)} / ${fmt(DURATION)}`, W - 60, 1030);
+}
+const LOGO = ["                                               /", "                             \\                //", "                             \\\\\\     \\        /     //", "                       \\\\      \\\\    \\\\      /|    //      //", "                  \\\\    \\\\\\     \\\\   \\\\\\     /|   ///     //", "                   \\\\\\   \\\\\\\\   \\\\\\   |\\\\   |||   //    ///     ///", "                    \\\\\\\\  \\\\\\\\   |\\\\  ||\\   |||  /||   ////   ////", "               \\\\\\\\   \\\\\\\\ \\\\\\\\%%%%%%%%%%%%%%%%%%%%%%% //|   ////  /////", "                \\\\\\\\  \\%%%%%88888888888\\**+||=888888888888%%%%//  ////", "           \\ \\\\  \\%%%888888;;;;:--#oo\\===~~||~|||+=+/=//o%#88888%%%%/  /////", "            \\%%%8888;;;::::,,,;;%o\\\\~~~=~\\--|-|||=//~//=/~*o#-~;;88888%%///", "     \\ \\ %%%888;;:::,,,````',,8---~-\\~-~\\~*x|o|||x/=//=;=~/++-@;;:::;;8888%% ////", "      %%888-;::,,,```'''...``#+---~---\\oo\\~-~*oo+/~=xo=~-~=---+#::``,,:::;;888%%", "  %%888~--;:,,`'''...      `#o-------x\\-*o@@@@@@@@@%=~ox-=;~~~+o%`.'''``,,::;;888%%//", "  88+=~-;:,`''..          ``x--~~~~-x--#@    @@@@@@@@%-=%=~---~-&``   ..''``,,:;-~88%%", "  o*+~;:,`'...            `8--------*-x@@    @@@@@@@@@%=---~-----&`       ..''`,:;-~=88%%", "  ****;:,`'...           ``%*=~~------#@@@@@@@@@@@@@@@#=--=~~~~=*#``         ..'`,:;-=*o8", "      *****,`''..        ``&-------x--&@@@@@@@@@@@@@@@x~--=~---=*%``         ..''`:;~=***", "           *****``''...   `8-----~-*-~o%@@@@@@@@@'@@@&==x------~*#`     ...''``,*****", "                *****``''',`#*-----;*-~~x@@@@@@@@@@@%-=o-~------&``..'''``******", "                     ******::#+-~~---=//~~*x&@@@%xx~\\\\\\+--~~-==o::``******", "                        /  *********//~/*%/+|-~-~\\o#o\\-\\\\~-*********", "                             /   /  ***********************  \\    \\", "                                 /    /   //   \\\\   \\    \\", "", "        ██████╗  ██████╗  ███╗   ██╗ ██╗   ██╗ ██╗ ███████╗ ██╗  ██████╗  ███╗   ██╗", "       ██╔════╝ ██╔═══██╗ ████╗  ██║ ██║   ██║ ██║ ██╔════╝ ██║ ██╔═══██╗ ████╗  ██║", "       ██║      ██║   ██║ ██╔██╗ ██║ ██║   ██║ ██║ ███████╗ ██║ ██║   ██║ ██╔██╗ ██║", "       ██║      ██║   ██║ ██║╚██╗██║ ╚██╗ ██╔╝ ██║ ╚════██║ ██║ ██║   ██║ ██║╚██╗██║", "       ╚██████╗ ╚██████╔╝ ██║ ╚████║  ╚████╔╝  ██║ ███████║ ██║ ╚██████╔╝ ██║ ╚████║", "        ╚═════╝  ╚═════╝  ╚═╝  ╚═══╝   ╚═══╝   ╚═╝ ╚══════╝ ╚═╝  ╚═════╝  ╚═╝  ╚═══╝", "      ═══════════════════════════════════════════════════════════════════════════════", "                V I S I O N - G U I D E D   C O N V E Y O R   S O R T I N G", "                    Jetson Nano  ▸  PLC  ▸  Diverter  ▸  Ignition SCADA"];
+const LOGO_FONT = '"DejaVu Sans Mono","Menlo","Consolas","Ubuntu Mono",monospace';
+function drawLogo(cx, top, size, reveal = 1) {            // team logo, drawn as text like logo.txt
+  g.save(); g.font = `${size}px ${LOGO_FONT}`; g.textAlign = 'left'; g.textBaseline = 'top'; g.fillStyle = '#e6e6e6';
+  const cw = g.measureText('M').width, lh = size * 1.2, w = Math.max(...LOGO.map(l => l.length)) * cw, base = g.globalAlpha;
+  LOGO.forEach((l, i) => { const a = clamp(reveal * (LOGO.length + 6) - i, 0, 1); if (a <= 0) return;
+    g.globalAlpha = base * a; g.fillText(l, cx - w / 2, top + i * lh); });
+  g.restore(); return top + LOGO.length * lh;
+}
+const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+// ---------------------------------------------------------------- frame
+function render(tv) {
+  const tw = worldFromVideo(clamp(tv, 0, DURATION));
+  setCam(camAt(tw));
+  g.setTransform(RES, 0, 0, RES, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  items = []; glows = []; texts = [];
+  drawFloor(tw);
+  drawPlant(tw);
+  drawCables(tw);
+  for (const q of parts) drawPart(q, tw);
+  flush();
+  drawPackets(tw);
+  drawSpacing(tw);
+  drawCallouts(tw);
+  const vg = g.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.7)'); g.fillStyle = vg; g.fillRect(0, 0, W, H);
+  const tb = g.createLinearGradient(0, 0, 0, 240); tb.addColorStop(0, 'rgba(0,0,0,.78)'); tb.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = tb; g.fillRect(0, 0, W, 240);
+  const bb = g.createLinearGradient(0, H - 130, 0, H); bb.addColorStop(0, 'rgba(0,0,0,0)'); bb.addColorStop(1, 'rgba(0,0,0,.8)'); g.fillStyle = bb; g.fillRect(0, H - 130, W, 130);
+  drawTags(tw); drawRecap(tw); drawCounts(tw); drawLegend(tw);
+  drawFeed(tw, M.feed1); drawFeed(tw, M.feed2);
+  drawTitle(tw); drawTitleCard(tw); drawEndCard(tw);
+}
+
+// ---------------------------------------------------------------- playback (mobile page)
+const q = new URLSearchParams(location.search);
+window.__duration = DURATION; window.__render = render;
+const $ = id => document.getElementById(id);
+const body = document.body, stage = $('stage'), seek = $('seek'), clock = $('clock'), fill = $('fill');
+let tv = clamp(+q.get('t') || 0, 0, DURATION), playing = true, dirty = true, last = performance.now();
+let scrubbing = false, wasPlaying = false, hideAt = 0;
+
+// Draw at the screen's real pixel count (at most 1920 wide) so phones don't paint 2 MP every frame.
+function fit() {
+  const w = cv.getBoundingClientRect().width || W;
+  const res = clamp(Math.ceil(w * (devicePixelRatio || 1) / W * 10) / 10, .4, 1);
+  if (res !== RES) { RES = res; cv.width = Math.round(W * res); cv.height = Math.round(H * res); }
+  dirty = true;
+}
+
+const sideways = matchMedia('(orientation: landscape) and (max-height: 600px)');
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+function layout() { body.classList.toggle('imm', sideways.matches || !!fsEl()); requestAnimationFrame(fit); }
+sideways.addEventListener ? sideways.addEventListener('change', layout) : sideways.addListener(layout);
+addEventListener('resize', layout);
+['fullscreenchange', 'webkitfullscreenchange'].forEach(ev => document.addEventListener(ev, layout));
+
+function poke() { hideAt = performance.now() + 2600; body.classList.add('ui'); }
+function setPlaying(p) {
+  if (p && tv >= DURATION) tv = 0;
+  playing = p; body.classList.toggle('playing', p); body.classList.toggle('ended', !p && tv >= DURATION);
+  $('play').setAttribute('aria-label', p ? 'Pause' : 'Play'); poke();
+}
+cv.addEventListener('click', () => {
+  if (body.classList.contains('imm') && !body.classList.contains('ui')) poke(); else setPlaying(!playing);
+});
+$('big').onclick = () => setPlaying(true);
+$('play').onclick = () => setPlaying(!playing);
+seek.addEventListener('input', () => {
+  if (!scrubbing) { scrubbing = true; wasPlaying = playing; playing = false; }
+  tv = seek.value / 1000 * DURATION; dirty = true; poke();
+});
+seek.addEventListener('change', () => { scrubbing = false; setPlaying(wasPlaying); });
+
+if (!(document.fullscreenEnabled || document.webkitFullscreenEnabled)) $('fs').hidden = true;
+$('fs').onclick = async () => {
+  if (fsEl()) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+  try {
+    await (stage.requestFullscreen || stage.webkitRequestFullscreen).call(stage);
+    await screen.orientation.lock('landscape');
+  } catch (e) {}
+};
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  else if (e.code === 'ArrowRight') { tv = Math.min(DURATION, tv + 5); dirty = true; }
+  else if (e.code === 'ArrowLeft') { tv = Math.max(0, tv - 5); dirty = true; }
+  else if (e.key === 'f') $('fs').click();
+});
+
+// chapters come straight from the animation's own step titles
+const CH = [['00', 'How one part gets sorted', 'ConVision at a glance', 0]]
+  .concat(STEPS.map(s => [s[2], s[3], s[4], videoFromWorld(s[0]())]))
+  .concat([['10', 'Sense, see, decide, sort', 'The whole loop in four words', videoFromWorld(M.endCard)]]);
+const rows = CH.map(c => {
+  const li = document.createElement('li'), b = document.createElement('button');
+  b.type = 'button';
+  b.innerHTML = `<span class="n">${c[0]}</span><span><b></b><small></small></span><span class="at">${fmt(c[3])}</span><i></i>`;
+  b.querySelector('b').textContent = c[1]; b.querySelector('small').textContent = c[2];
+  b.onclick = () => { tv = c[3] + .01; dirty = true; setPlaying(true); stage.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  li.appendChild(b); $('chapters').appendChild(li); return li;
+});
+let cur = -1;
+function showChapter() {
+  let k = 0; CH.forEach((c, i) => { if (tv >= c[3]) k = i; });
+  if (k !== cur) {
+    if (cur >= 0) { rows[cur].classList.remove('on'); rows[cur].querySelector('i').style.width = '0'; }
+    cur = k; rows[k].classList.add('on');
+    $('nowN').textContent = CH[k][0]; $('nowT').textContent = CH[k][1]; $('nowS').textContent = CH[k][2];
+  }
+  const end = k + 1 < CH.length ? CH[k + 1][3] : DURATION;
+  rows[k].querySelector('i').style.width = (100 * clamp((tv - CH[k][3]) / (end - CH[k][3]))) + '%';
+}
+
+function tick(now) {
+  const dt = Math.min(.1, (now - last) / 1000); last = now;
+  if (playing) { tv += dt; dirty = true; if (tv >= DURATION) { tv = DURATION; setPlaying(false); } }
+  if (dirty) {
+    render(tv); dirty = false;
+    if (!scrubbing) seek.value = tv / DURATION * 1000;
+    fill.style.width = (100 * tv / DURATION) + '%';
+    clock.textContent = `${fmt(tv)} / ${fmt(DURATION)}`;
+    showChapter();
+  }
+  if (playing && !scrubbing && now > hideAt) body.classList.remove('ui');
+  requestAnimationFrame(tick);
+}
+layout(); poke(); requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
